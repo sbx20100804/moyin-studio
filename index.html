@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-CN" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>墨隐 · Novel Studio</title>
+    <script>
+      // Surface fatal runtime errors instead of showing a blank window.
+      (function () {
+        function show(text) {
+          if (document.getElementById("fatal-overlay")) return;
+          var pre = document.createElement("pre");
+          pre.id = "fatal-overlay";
+          pre.style.cssText =
+            "position:fixed;inset:0;z-index:999999;background:#0d0a08;color:#f2a08c;" +
+            "padding:28px;font:12px/1.7 ui-monospace,Consolas,monospace;white-space:pre-wrap;overflow:auto";
+          pre.textContent = "界面出现异常：\n\n" + text;
+          document.body.appendChild(pre);
+        }
+        window.addEventListener("error", function (e) {
+          show((e.message || "script error") + "\n" + (e.filename || "") + ":" + (e.lineno || 0));
+        });
+        window.addEventListener("unhandledrejection", function (e) {
+          var r = e.reason;
+          show(String((r && (r.stack || r.message)) || r));
+        });
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
