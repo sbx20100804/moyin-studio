@@ -618,6 +618,10 @@ pub async fn extract_entities(
                 .chars()
                 .take(120)
                 .collect(),
+            speech_style: String::new(),
+            speech_length: "medium".to_string(),
+            speech_words: String::new(),
+            speech_taboo: String::new(),
             updated_at: String::new(),
         };
         if let Ok(saved_entity) = db::upsert_entity(&conn, &entity) {

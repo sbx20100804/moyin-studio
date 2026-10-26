@@ -46,6 +46,14 @@ export interface Entity {
   aliases: string;
   role: string;
   description: string;
+  /** 口癖 / 语气（仅人物） */
+  speechStyle: string;
+  /** short / medium / long */
+  speechLength: "short" | "medium" | "long";
+  /** 常用词，逗号分隔 */
+  speechWords: string;
+  /** 禁用词，逗号分隔 */
+  speechTaboo: string;
   updatedAt: string;
 }
 

@@ -147,6 +147,13 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         ensure_column(conn, "projects", "style_sample", "TEXT NOT NULL DEFAULT ''")?;
         conn.pragma_update(None, "user_version", 6)?;
     }
+    if version < 7 {
+        ensure_column(conn, "entities", "speech_style", "TEXT NOT NULL DEFAULT ''")?;
+        ensure_column(conn, "entities", "speech_length", "TEXT NOT NULL DEFAULT 'medium'")?;
+        ensure_column(conn, "entities", "speech_words", "TEXT NOT NULL DEFAULT ''")?;
+        ensure_column(conn, "entities", "speech_taboo", "TEXT NOT NULL DEFAULT ''")?;
+        conn.pragma_update(None, "user_version", 7)?;
+    }
     Ok(())
 }
 
@@ -588,7 +595,8 @@ pub fn reorder_chapters(conn: &mut Connection, ids: &[i64]) -> rusqlite::Result<
 
 pub fn list_entities(conn: &Connection, project_id: i64) -> rusqlite::Result<Vec<Entity>> {
     let mut stmt = conn.prepare(
-        "SELECT id, project_id, kind, name, aliases, role, description, updated_at
+        "SELECT id, project_id, kind, name, aliases, role, description,
+                speech_style, speech_length, speech_words, speech_taboo, updated_at
          FROM entities WHERE project_id=?1
          ORDER BY CASE kind WHEN 'character' THEN 0 WHEN 'location' THEN 1 WHEN 'faction' THEN 2
                             WHEN 'item' THEN 3 ELSE 4 END, name",
@@ -602,7 +610,11 @@ pub fn list_entities(conn: &Connection, project_id: i64) -> rusqlite::Result<Vec
             aliases: r.get(4)?,
             role: r.get(5)?,
             description: r.get(6)?,
-            updated_at: r.get(7)?,
+            speech_style: r.get(7)?,
+            speech_length: r.get(8)?,
+            speech_words: r.get(9)?,
+            speech_taboo: r.get(10)?,
+            updated_at: r.get(11)?,
         })
     })?;
     rows.collect()
@@ -612,20 +624,49 @@ pub fn upsert_entity(conn: &Connection, e: &Entity) -> rusqlite::Result<Entity> 
     let t = now();
     let id = if e.id == 0 {
         conn.execute(
-            "INSERT INTO entities (project_id, kind, name, aliases, role, description, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![e.project_id, e.kind, e.name, e.aliases, e.role, e.description, t],
+            "INSERT INTO entities (project_id, kind, name, aliases, role, description,
+                                   speech_style, speech_length, speech_words, speech_taboo, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                e.project_id,
+                e.kind,
+                e.name,
+                e.aliases,
+                e.role,
+                e.description,
+                e.speech_style,
+                if e.speech_length.is_empty() { "medium" } else { &e.speech_length },
+                e.speech_words,
+                e.speech_taboo,
+                t
+            ],
         )?;
         conn.last_insert_rowid()
     } else {
         conn.execute(
-            "UPDATE entities SET kind=?1, name=?2, aliases=?3, role=?4, description=?5, updated_at=?6 WHERE id=?7",
-            params![e.kind, e.name, e.aliases, e.role, e.description, t, e.id],
+            "UPDATE entities SET kind=?1, name=?2, aliases=?3, role=?4, description=?5,
+                    speech_style=?6, speech_length=?7, speech_words=?8, speech_taboo=?9,
+                    updated_at=?10 WHERE id=?11",
+            params![
+                e.kind,
+                e.name,
+                e.aliases,
+                e.role,
+                e.description,
+                e.speech_style,
+                if e.speech_length.is_empty() { "medium" } else { &e.speech_length },
+                e.speech_words,
+                e.speech_taboo,
+                t,
+                e.id
+            ],
         )?;
         e.id
     };
     conn.query_row(
-        "SELECT id, project_id, kind, name, aliases, role, description, updated_at FROM entities WHERE id=?1",
+        "SELECT id, project_id, kind, name, aliases, role, description,
+                speech_style, speech_length, speech_words, speech_taboo, updated_at
+         FROM entities WHERE id=?1",
         params![id],
         |r| {
             Ok(Entity {
@@ -636,7 +677,11 @@ pub fn upsert_entity(conn: &Connection, e: &Entity) -> rusqlite::Result<Entity> 
                 aliases: r.get(4)?,
                 role: r.get(5)?,
                 description: r.get(6)?,
-                updated_at: r.get(7)?,
+                speech_style: r.get(7)?,
+                speech_length: r.get(8)?,
+                speech_words: r.get(9)?,
+                speech_taboo: r.get(10)?,
+                updated_at: r.get(11)?,
             })
         },
     )

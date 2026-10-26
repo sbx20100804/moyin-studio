@@ -58,6 +58,18 @@ pub struct Entity {
     pub aliases: String,
     pub role: String,
     pub description: String,
+    /// 只对 character 有意义：口癖 / 语气
+    #[serde(default)]
+    pub speech_style: String,
+    /// short / medium / long
+    #[serde(default)]
+    pub speech_length: String,
+    /// 常用词，逗号分隔
+    #[serde(default)]
+    pub speech_words: String,
+    /// 禁用词，逗号分隔
+    #[serde(default)]
+    pub speech_taboo: String,
     pub updated_at: String,
 }
 

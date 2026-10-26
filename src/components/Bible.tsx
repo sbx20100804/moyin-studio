@@ -1,6 +1,7 @@
 import { AnimatePresence, motion } from "motion/react";
 import {
   MapPin,
+  MessageSquare,
   Package,
   Plus,
   Swords,
@@ -39,6 +40,10 @@ const emptyEntity = (projectId: number, kind: EntityKind): Entity => ({
   aliases: "",
   role: "",
   description: "",
+  speechStyle: "",
+  speechLength: "medium",
+  speechWords: "",
+  speechTaboo: "",
   updatedAt: new Date().toISOString(),
 });
 
@@ -153,6 +158,12 @@ export default function Bible() {
                     <p className="line-clamp-3 text-[11.5px] leading-[1.85] text-dim/90">
                       {e.description || "还没有描述，点击补充"}
                     </p>
+                    {e.kind === "character" && e.speechStyle ? (
+                      <div className="mt-2 flex items-start gap-1.5 rounded-lg bg-gold/6 px-2 py-1 text-[9.5px] leading-relaxed text-gold/80">
+                        <MessageSquare size={10} className="mt-[2px] shrink-0" />
+                        <span className="line-clamp-2">{e.speechStyle}</span>
+                      </div>
+                    ) : null}
                   </motion.button>
                 );
               })}
@@ -242,6 +253,61 @@ export default function Bible() {
                 placeholder="性格、外貌、动机、关系、当前状态……写具体一点。"
               />
             </Field>
+
+            {editing.kind === "character" ? (
+              <div className="col-span-2 rounded-xl border border-gold/20 bg-gold/4 p-3">
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="text-[11px] text-gold/90">角色语气</span>
+                  <span className="text-[9.5px] text-mute">出场时按此注入，让对白分得出是谁</span>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label="口癖 / 语气" className="col-span-2">
+                    <TextArea
+                      rows={2}
+                      value={editing.speechStyle}
+                      onChange={(e) =>
+                        setEditing({ ...editing, speechStyle: e.target.value })
+                      }
+                      placeholder="例如：话少，常用反问；紧张时重复对方的最后两个字。"
+                    />
+                  </Field>
+                  <Field label="说话长度">
+                    <Select
+                      value={editing.speechLength}
+                      onChange={(v) =>
+                        setEditing({
+                          ...editing,
+                          speechLength: v as "short" | "medium" | "long",
+                        })
+                      }
+                      options={[
+                        { value: "short", label: "短句为主" },
+                        { value: "medium", label: "正常" },
+                        { value: "long", label: "长句 / 爱绕" },
+                      ]}
+                    />
+                  </Field>
+                  <Field label="常用词" hint="逗号分隔">
+                    <TextInput
+                      value={editing.speechWords}
+                      onChange={(e) =>
+                        setEditing({ ...editing, speechWords: e.target.value })
+                      }
+                      placeholder="嗯、走吧、随你"
+                    />
+                  </Field>
+                  <Field label="禁用词" hint="逗号分隔" className="col-span-2">
+                    <TextInput
+                      value={editing.speechTaboo}
+                      onChange={(e) =>
+                        setEditing({ ...editing, speechTaboo: e.target.value })
+                      }
+                      placeholder="亲爱的、宝贝、太好了（不符合人物）"
+                    />
+                  </Field>
+                </div>
+              </div>
+            ) : null}
           </div>
         ) : null}
       </Modal>

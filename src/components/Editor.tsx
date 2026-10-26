@@ -8,6 +8,7 @@ import {
   ListTree,
   Loader2,
   Maximize2,
+  MessagesSquare,
   Minimize2,
   RotateCcw,
   Scissors,
@@ -41,10 +42,16 @@ const SELECT_ACTIONS = [
       "精简这段文字：删去冗余修饰与重复信息，保留关键动作、对白与情绪，篇幅压缩到原文的六成左右。",
   },
   {
-    label: "改成对白",
+    label: "对白",
     icon: AlignLeft,
     instruction:
       "把这段文字改写成以对白推进的场景：保留原有信息与情节，用简洁的对话与少量动作描写呈现，避免解释性叙述。",
+  },
+  {
+    label: "轻小说",
+    icon: MessagesSquare,
+    instruction:
+      "把这段改写成轻小说式对白：短句、口语，有停顿、打断和答非所问；不同角色说话的用词与语气必须不同（参考【角色语气】里的口癖、句长、常用词、禁用词）；删掉“说道/问道/回答道”这类转述，用动作和语气代替；保留原有信息与人物关系，篇幅与原文相当。",
   },
 ];
 
@@ -280,7 +287,7 @@ export default function Editor() {
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 10, scale: 0.97 }}
             transition={{ type: "spring", stiffness: 480, damping: 34 }}
-            className="absolute bottom-16 left-1/2 z-20 flex w-max -translate-x-1/2 items-center gap-1 whitespace-nowrap rounded-2xl border border-line/90 bg-surface/95 p-1 pl-3 shadow-[0_20px_50px_-20px_rgba(0,0,0,0.7)] backdrop-blur-xl"
+            className="scroll-thin absolute bottom-16 left-1/2 z-20 flex w-max max-w-[calc(100%-2rem)] -translate-x-1/2 items-center gap-1 overflow-x-auto whitespace-nowrap rounded-2xl border border-line/90 bg-surface/95 p-1 pl-3 shadow-[0_20px_50px_-20px_rgba(0,0,0,0.7)] backdrop-blur-xl"
           >
             <span className="mr-1 shrink-0 select-none text-[10.5px] tabular-nums text-mute">
               已选 {selection.text.replace(/\s/g, "").length} 字

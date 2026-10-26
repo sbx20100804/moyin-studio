@@ -132,6 +132,12 @@ function ContextMeter() {
                   <span className="text-gold/80">{meta.foreshadowCount} 条</span>
                 </div>
               ) : null}
+              {meta.voiceCount > 0 ? (
+                <div className="flex justify-between">
+                  <span>角色语气</span>
+                  <span className="text-gold/80">{meta.voiceCount} 人</span>
+                </div>
+              ) : null}
               <div className="flex justify-between">
                 <span>上下文窗口</span>
                 <span className="text-dim">{Math.round(meta.contextWindow / 1000)}k tokens</span>

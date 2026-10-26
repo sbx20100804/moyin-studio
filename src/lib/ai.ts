@@ -124,6 +124,7 @@ export interface BuildResult {
     tailBudget: number;
     retrievedCount: number;
     foreshadowCount: number;
+    voiceCount: number;
     /** True when context had to be trimmed to fit the window. */
     trimmed: boolean;
   };
@@ -224,14 +225,25 @@ export function buildMessages(opts: {
   });
   const system = voice.rules ? `${base}\n\n${voice.rules}` : base;
 
-  const sceneText = `${tail(content, 3000)}\n${chapter.outline}`;
-  const ranked = [...entities]
+  const sceneText = `${tail(content, 3000)}\n${chapter.outline}\n${selection?.text ?? ""}`;
+  const scored = [...entities]
     .map((e) => ({ e, score: entityScore(e, sceneText) }))
     .sort((a, b) => {
       if (b.score !== a.score) return b.score - a.score;
       return (KIND_ORDER[a.e.kind] ?? 9) - (KIND_ORDER[b.e.kind] ?? 9);
-    })
-    .map((x) => x.e);
+    });
+  const ranked = scored.map((x) => x.e);
+
+  const hasVoice = (e: Entity) =>
+    Boolean(
+      e.speechStyle.trim() ||
+        e.speechWords.trim() ||
+        e.speechTaboo.trim() ||
+        (e.speechLength && e.speechLength !== "medium")
+    );
+  const voiced = scored.filter((x) => x.e.kind === "character" && hasVoice(x.e));
+  const appearing = voiced.filter((x) => x.score > 0).map((x) => x.e);
+  const voiceCharacters = appearing.length ? appearing : voiced.slice(0, 4).map((x) => x.e);
 
   const index = Math.max(0, chapters.findIndex((c) => c.id === chapter.id));
   const prevChapters = chapters.slice(0, index);
@@ -273,6 +285,23 @@ export function buildMessages(opts: {
       });
       parts.push(
         `【${kindLabel[shown[0].kind] ? "人物与设定" : "设定"}】\n${lines.join("\n")}`
+      );
+    }
+
+    const voiceLines = voiceCharacters.slice(0, 6).map((e) => {
+      const bits: string[] = [];
+      if (e.speechStyle.trim()) bits.push(`语气：${e.speechStyle.trim()}`);
+      if (e.speechLength && e.speechLength !== "medium") {
+        bits.push(`句长：${e.speechLength === "short" ? "短" : "长"}`);
+      }
+      if (e.speechWords.trim()) bits.push(`常用：${e.speechWords.trim()}`);
+      if (e.speechTaboo.trim()) bits.push(`忌用：${e.speechTaboo.trim()}`);
+      if (!bits.length) return "";
+      return `· ${e.name}｜${bits.join("｜")}`;
+    }).filter(Boolean);
+    if (voiceLines.length) {
+      parts.push(
+        `【角色语气（对白要能分辨出是谁在说话，不要人人都一个腔调）】\n${voiceLines.join("\n")}`
       );
     }
 
@@ -405,6 +434,7 @@ export function buildMessages(opts: {
       tailBudget: budgets.tailB,
       retrievedCount: built.retrievedCount,
       foreshadowCount: opts.foreshadows?.length ?? 0,
+      voiceCount: Math.min(voiceCharacters.length, 6),
       trimmed,
     },
   };
