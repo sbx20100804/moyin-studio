@@ -1,6 +1,6 @@
 [package]
 name = "novel-studio"
-version = "0.1.0"
+version = "0.2.0"
 description = "墨隐 · AI 小说创作工作台"
 authors = ["Novel Studio"]
 edition = "2021"

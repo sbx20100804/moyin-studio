@@ -3,6 +3,10 @@ export interface Project {
   title: string;
   synopsis: string;
   styleGuide: string;
+  /** 文风预设：light / web / literary / custom */
+  voice: "light" | "web" | "literary" | "custom";
+  /** 可选：一段喜欢的文字，作为语感样本 */
+  styleSample: string;
   pov: string;
   genre: string;
   targetWords: number;

@@ -15,16 +15,16 @@ const tail = (text: string, n: number) =>
  * Default system prompt. Users can override it in 设置 → 创作.
  * Variables: {{title}} {{genre}} {{pov}} {{style}}
  */
-export const DEFAULT_SYSTEM_TEMPLATE = `你是一位资深中文小说家，也是作者的合写者与文字编辑。此刻你正在写长篇小说《{{title}}》。
-类型：{{genre}}；叙事视角：{{pov}}。
+export const DEFAULT_SYSTEM_TEMPLATE = `你在写长篇小说《{{title}}》，读者是普通人，不是评委。
+类型：{{genre}}；视角：{{pov}}。
 文风：{{style}}
 
-写作准则：
-1. 贴着人物的感官与动作写，少用解释性旁白；情绪靠细节和留白，不靠形容词。
-2. 句子长短交错，段落短促；每一段只推进一件事。
-3. 对白要有潜台词，每个人物说话的方式都应能被认出来是谁。
-4. 避免陈词滥调与套语（“仿佛”“似乎”“一丝”“不由得”“缓缓”之类），不要空洞的比喻。
-5. 不写总结句（“总之”“可以看出”），不在正文里评价人物或解释主题。
+把这一章写得像人写的：
+1. 写具体的东西：动作、声音、气味、身体反应、手边的物件；不写抽象的情绪总结。
+2. 让对话承担大部分信息。人物说话像真人：会停顿、会答非所问、会嘴硬。
+3. 句子长短不齐，允许短句、断句、单句成段；不要每段都工整、都三行。
+4. 不解释、不升华、不总结，不在正文里评价人物或点明主题。
+5. 避开套语：仿佛、似乎、一丝、不禁、微微、缓缓、不由得、莫名的、难以言喻。
 
 硬性约束：
 1. 严格延续既有设定、人物性格、称谓、时间线；不得擅自新增重大设定、改名或改变人物关系。
@@ -33,7 +33,75 @@ export const DEFAULT_SYSTEM_TEMPLATE = `你是一位资深中文小说家，也�
 4. 与上文自然衔接，不重复已有段落，不复述前情，不写“未完待续”。
 5. 对白使用中文引号“”，段落之间空一行。`;
 
-export const DEFAULT_STYLE = "自然流畅，画面感强，避免陈词滥调。";
+export type VoiceId = "light" | "web" | "literary" | "custom";
+
+export interface VoicePreset {
+  id: VoiceId;
+  label: string;
+  hint: string;
+  style: string;
+  rules: string;
+}
+
+/**
+ * Voice presets appended to the system prompt. This is where "像人写的"
+ * actually gets enforced — the base template stays editable, these rules
+ * carry the genre-specific craft.
+ */
+export const VOICE_PRESETS: Record<VoiceId, VoicePreset> = {
+  light: {
+    id: "light",
+    label: "轻小说",
+    hint: "对话推进、心理吐槽、短句单句成段",
+    style: "轻快、口语化，贴近视角人物，带一点自嘲和吐槽。",
+    rules: `【文风执行细则 · 轻小说】
+读起来要像人写的连载，不像范文。
+1. 视角贴人：只写视角人物看得见、听得见、想得到的东西，不写“他不知道的是”。
+2. 对话优先：对话与动作占七成以上，叙述只做转场；每段对话之间夹动作或神态。
+3. 句子短：多用短句、断句、单句成段，允许不完整句；一段不超过四行。
+4. 心理吐槽：允许短促的内心独白、自嘲、吐槽，用「」标示；不要长篇心理分析。
+5. 具体化：写具体动作、物件、声音、气味、身体反应；不写“心中五味杂陈”这类总结。
+6. 人物口癖：每个角色有固定用词和语气，遮住名字也能认出是谁在说话。
+7. 节奏：每 800-1200 字安排一个小转折或新信息；章末停在悬念、误会或反转上。
+8. 允许：拟声词、破折号、省略号、括号吐槽、口语和轻微网络语。
+9. 禁止：排比升华、哲理总结、每段工整对仗、“空气仿佛凝固”“嘴角勾起一抹”“眼神深邃”、路人 NPC 式惊叹。
+10. 禁止 AI 套语：仿佛、似乎、一丝、不禁、微微、缓缓、不由得、莫名的、难以言喻、心中一暖。`,
+  },
+  web: {
+    id: "web",
+    label: "网文",
+    hint: "快节奏、强钩子、行动多于心理",
+    style: "直给、利落、爽点清晰，少绕弯子。",
+    rules: `【文风执行细则 · 网文】
+1. 开篇 200 字内进入冲突或目标，不铺垫环境。
+2. 主角每章至少做一次主动选择，不被动挨打。
+3. 信息给读者，不藏着掖着；能力规则要清楚，代价要出现。
+4. 对话短促，多行动少心理；爽点前先压，压完立刻给。
+5. 每章结尾留钩子：新敌人、新线索、新误会。
+6. 不用书面语堆砌；少用“仿佛/似乎/一丝/不禁/缓缓”。`,
+  },
+  literary: {
+    id: "literary",
+    label: "严肃文学",
+    hint: "克制、留白、以物写情",
+    style: "克制、准确，意象具体，不抒情。",
+    rules: `【文风执行细则 · 严肃文学】
+1. 克制：不解释情绪，用动作、物件、留白承载。
+2. 句子长短交错，允许长句，但每句都要有信息。
+3. 对话少而准，潜台词多于字面。
+4. 不写总结段，不写主题升华。
+5. 比喻要新，宁可不用。`,
+  },
+  custom: {
+    id: "custom",
+    label: "自定义",
+    hint: "只用你写的文风说明",
+    style: "",
+    rules: "",
+  },
+};
+
+export const DEFAULT_STYLE = "自然流畅，像人写的，避免套语。";
 
 export function renderTemplate(
   template: string,
@@ -89,10 +157,17 @@ export interface RetrievedSnippet {
   text: string;
 }
 
-function continueTask(length: number) {
+function continueTask(length: number, voice: VoiceId) {
+  const extra =
+    voice === "light"
+      ? "- 优先用对话或动作接住，不要用一段环境描写开场；允许单句成段。"
+      : voice === "web"
+        ? "- 直接推进冲突或目标，不要回顾；动作多于心理。"
+        : "- 接住最后一句的语气，不要急着解释。";
   return `【任务】从标记处直接续写，约 ${length} 字。
 - 承接最后一句的语感、节奏与视角，不跳场、不总结。
 - 这一段要有自己的小起伏：一个动作、一次试探、或一个没被说出口的念头。
+${extra}
 - 结尾停在钩子上，不要收束整章。
 不要重复上文最后一段。直接从下一句开始。`;
 }
@@ -102,6 +177,13 @@ function rewriteTask(instruction: string) {
 改写要求：${instruction}
 【输出要求】只输出改写后的正文，段落数与原文大致相当。`;
 }
+
+const VOICE_LENGTH: Record<VoiceId, number> = {
+  light: 650,
+  web: 950,
+  literary: 750,
+  custom: 700,
+};
 
 export function buildMessages(opts: {
   project: Project;
@@ -129,14 +211,18 @@ export function buildMessages(opts: {
   const capTokens = Math.floor(contextWindow * 0.92);
   const capChars = Math.floor(capTokens * 1.6);
 
-  const style = project.styleGuide.trim();
+  const voiceId: VoiceId =
+    project.voice && project.voice in VOICE_PRESETS ? project.voice : "light";
+  const voice = VOICE_PRESETS[voiceId];
+  const style = project.styleGuide.trim() || voice.style || DEFAULT_STYLE;
   const template = opts.promptTemplate?.trim() || DEFAULT_SYSTEM_TEMPLATE;
-  const system = renderTemplate(template, {
+  const base = renderTemplate(template, {
     title: project.title,
     genre: project.genre || "未指定",
     pov: project.pov || "第三人称",
-    style: style || DEFAULT_STYLE,
+    style,
   });
+  const system = voice.rules ? `${base}\n\n${voice.rules}` : base;
 
   const sceneText = `${tail(content, 3000)}\n${chapter.outline}`;
   const ranked = [...entities]
@@ -153,9 +239,9 @@ export function buildMessages(opts: {
   const instruction =
     opts.instruction?.trim() ||
     (kind === "rewrite"
-      ? "润色这段文字：去掉多余的形容词与解释，让句子更短、更有画面感，情节与信息不变。"
+      ? "把这段改得像人写的：删掉套语与解释性句子，把抽象情绪改成动作、对话或身体反应；句子长短错开。情节与信息不变。"
       : "");
-  const targetLength = 600 + (index % 3) * 100;
+  const targetLength = VOICE_LENGTH[voiceId] + (index % 3) * 80;
 
   const assemble = (budgets: {
     tailB: number;
@@ -220,6 +306,13 @@ export function buildMessages(opts: {
       parts.push(`【本章章纲（尽力贴合，不要机械罗列）】\n${outline.slice(0, 1200)}`);
     }
 
+    const sample = project.styleSample?.trim() ?? "";
+    if (sample && (kind === "continue" || kind === "custom")) {
+      parts.push(
+        `【语感样本（只学语气、节奏与用词习惯，不要照抄内容、人名或情节）】\n${sample.slice(0, 900)}`
+      );
+    }
+
     const rag = (opts.retrieved ?? []).slice(0, budgets.ragN);
     if (rag.length) {
       parts.push(
@@ -255,8 +348,8 @@ export function buildMessages(opts: {
       }
       const ask =
         kind === "custom"
-          ? instruction || continueTask(targetLength)
-          : continueTask(targetLength);
+          ? instruction || continueTask(targetLength, voiceId)
+          : continueTask(targetLength, voiceId);
       parts.push(ask);
     }
 
@@ -326,9 +419,10 @@ export const QUICK_ACTIONS = [
   },
   {
     kind: "rewrite" as GenKind,
-    label: "润色选中",
-    hint: "凝练文字，保留情节",
-    instruction: "润色这段文字：去掉多余的形容词与解释，让句子更短、更有画面感，情节与信息不变。",
+    label: "去 AI 味",
+    hint: "删套语、改成人话",
+    instruction:
+      "把这段改得像人写的：删掉“仿佛/似乎/一丝/不禁/微微/缓缓”这类套语和解释性句子；把抽象的情绪改写成动作、对话或身体反应；让句子长短错开，允许单句成段。情节、信息与人名不变。",
   },
   {
     kind: "outline" as GenKind,

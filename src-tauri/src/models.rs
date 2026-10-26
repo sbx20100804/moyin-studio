@@ -7,6 +7,12 @@ pub struct Project {
     pub title: String,
     pub synopsis: String,
     pub style_guide: String,
+    /// 文风预设：light / web / literary / custom
+    #[serde(default)]
+    pub voice: String,
+    /// 可选：一段喜欢的文字，作为语感样本
+    #[serde(default)]
+    pub style_sample: String,
     pub pov: String,
     pub genre: String,
     pub target_words: i64,

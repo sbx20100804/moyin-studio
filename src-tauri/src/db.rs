@@ -139,6 +139,14 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         )?;
         conn.pragma_update(None, "user_version", 4)?;
     }
+    if version < 5 {
+        ensure_column(conn, "projects", "voice", "TEXT NOT NULL DEFAULT 'light'")?;
+        conn.pragma_update(None, "user_version", 5)?;
+    }
+    if version < 6 {
+        ensure_column(conn, "projects", "style_sample", "TEXT NOT NULL DEFAULT ''")?;
+        conn.pragma_update(None, "user_version", 6)?;
+    }
     Ok(())
 }
 
@@ -293,8 +301,11 @@ pub fn list_projects(conn: &Connection) -> rusqlite::Result<Vec<Project>> {
         "SELECT p.id, p.title, p.synopsis, p.style_guide, p.pov, p.genre, p.target_words, p.accent,
                 p.created_at, p.updated_at,
                 COALESCE(SUM(c.word_count), 0) AS wc,
-                COUNT(c.id) AS cc
-         FROM projects p LEFT JOIN chapters c ON c.project_id = p.id
+                COUNT(c.id) AS cc,
+                p.voice,
+                p.style_sample
+         FROM projects p LEFT JOIN chapters c
+              ON c.project_id = p.id AND c.deleted_at IS NULL
          GROUP BY p.id
          ORDER BY p.updated_at DESC",
     )?;
@@ -312,6 +323,8 @@ pub fn list_projects(conn: &Connection) -> rusqlite::Result<Vec<Project>> {
             updated_at: r.get(9)?,
             word_count: r.get(10)?,
             chapter_count: r.get(11)?,
+            voice: r.get(12)?,
+            style_sample: r.get(13)?,
         })
     })?;
     rows.collect()
@@ -321,8 +334,10 @@ pub fn get_project(conn: &Connection, id: i64) -> rusqlite::Result<Project> {
     conn.query_row(
         "SELECT p.id, p.title, p.synopsis, p.style_guide, p.pov, p.genre, p.target_words, p.accent,
                 p.created_at, p.updated_at,
-                COALESCE((SELECT SUM(word_count) FROM chapters WHERE project_id = p.id), 0),
-                (SELECT COUNT(*) FROM chapters WHERE project_id = p.id)
+                COALESCE((SELECT SUM(word_count) FROM chapters WHERE project_id = p.id AND deleted_at IS NULL), 0),
+                (SELECT COUNT(*) FROM chapters WHERE project_id = p.id AND deleted_at IS NULL),
+                p.voice,
+                p.style_sample
          FROM projects p WHERE p.id = ?1",
         params![id],
         |r| {
@@ -339,6 +354,8 @@ pub fn get_project(conn: &Connection, id: i64) -> rusqlite::Result<Project> {
                 updated_at: r.get(9)?,
                 word_count: r.get(10)?,
                 chapter_count: r.get(11)?,
+                voice: r.get(12)?,
+                style_sample: r.get(13)?,
             })
         },
     )
@@ -347,8 +364,8 @@ pub fn get_project(conn: &Connection, id: i64) -> rusqlite::Result<Project> {
 pub fn create_project(conn: &Connection, title: &str, genre: &str) -> rusqlite::Result<Project> {
     let t = now();
     conn.execute(
-        "INSERT INTO projects (title, synopsis, style_guide, pov, genre, target_words, accent, created_at, updated_at)
-         VALUES (?1, '', '', '第三人称', ?2, 0, '#D9A85F', ?3, ?3)",
+        "INSERT INTO projects (title, synopsis, style_guide, pov, genre, target_words, accent, voice, style_sample, created_at, updated_at)
+         VALUES (?1, '', '', '第三人称', ?2, 0, '#D9A85F', 'light', '', ?3, ?3)",
         params![title, genre, t],
     )?;
     let id = conn.last_insert_rowid();
@@ -358,7 +375,7 @@ pub fn create_project(conn: &Connection, title: &str, genre: &str) -> rusqlite::
 pub fn update_project(conn: &Connection, p: &Project) -> rusqlite::Result<()> {
     conn.execute(
         "UPDATE projects SET title=?1, synopsis=?2, style_guide=?3, pov=?4, genre=?5,
-                target_words=?6, accent=?7, updated_at=?8 WHERE id=?9",
+                target_words=?6, accent=?7, voice=?8, style_sample=?9, updated_at=?10 WHERE id=?11",
         params![
             p.title,
             p.synopsis,
@@ -367,6 +384,8 @@ pub fn update_project(conn: &Connection, p: &Project) -> rusqlite::Result<()> {
             p.genre,
             p.target_words,
             p.accent,
+            if p.voice.is_empty() { "light" } else { &p.voice },
+            p.style_sample,
             now(),
             p.id
         ],

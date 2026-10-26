@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { buildMessages } from "@/lib/ai";
+import { analyzeHuman } from "@/lib/humanize";
 import { cx, estimateTokens } from "@/lib/format";
 import { useStore } from "@/lib/store";
 import type { GenKind } from "@/lib/types";
@@ -165,6 +166,12 @@ export default function AIPanel() {
   const [view, setView] = useState<"result" | "diff">("result");
   const [showReasoning, setShowReasoning] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  const human = useMemo(() => {
+    if (!gen || gen.text.trim().length < 60) return null;
+    if (gen.status === "streaming") return null;
+    return analyzeHuman(gen.text);
+  }, [gen]);
 
   useEffect(() => {
     if (gen?.status === "streaming" && scrollRef.current) {
@@ -390,7 +397,27 @@ export default function AIPanel() {
                 ) : (
                   <span className="text-[10px] text-mute">{gen.profileName}</span>
                 )}
+                {human ? (
+                  <span
+                    title={human.notes.join("\n") || "读起来比较自然"}
+                    className={cx(
+                      "rounded-full border px-1.5 py-0.5 text-[9.5px] tabular-nums",
+                      human.score >= 80
+                        ? "border-emerald-400/30 text-emerald-300/90"
+                        : human.score >= 60
+                          ? "border-gold/30 text-gold/90"
+                          : "border-cinnabar/30 text-cinnabar/90"
+                    )}
+                  >
+                    人味 {human.score}
+                  </span>
+                ) : null}
               </div>
+              {human && !streaming && human.notes.length > 0 ? (
+                <div className="border-b border-line/40 bg-surface2/30 px-3 py-1.5 text-[10px] leading-relaxed text-mute">
+                  {human.notes[0]}
+                </div>
+              ) : null}
 
               {gen.kind === "rewrite" && gen.selection && !streaming ? (
                 <div className="flex gap-1 border-b border-line/50 px-2 py-1.5">

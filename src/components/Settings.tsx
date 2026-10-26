@@ -17,7 +17,7 @@ import {
   Zap,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { DEFAULT_SYSTEM_TEMPLATE } from "@/lib/ai";
+import { DEFAULT_SYSTEM_TEMPLATE, VOICE_PRESETS } from "@/lib/ai";
 import { api } from "@/lib/api";
 import { cx } from "@/lib/format";
 import { useStore } from "@/lib/store";
@@ -69,10 +69,13 @@ export default function Settings() {
   const setTheme = useStore((s) => s.setTheme);
   const promptTemplate = useStore((s) => s.promptTemplate);
   const savePromptTemplate = useStore((s) => s.setPromptTemplate);
+  const project = useStore((s) => s.projects.find((p) => p.id === s.activeProjectId));
+  const updateProject = useStore((s) => s.updateProject);
   const toast = useStore((s) => s.toast);
 
   const [tab, setTab] = useState<Tab>("model");
   const [templateDraft, setTemplateDraft] = useState("");
+  const [sampleDraft, setSampleDraft] = useState("");
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [form, setForm] = useState<Form>(emptyForm(true));
   const [models, setModels] = useState<string[]>([]);
@@ -91,6 +94,11 @@ export default function Settings() {
     }
     setTemplateDraft(promptTemplate || DEFAULT_SYSTEM_TEMPLATE);
   }, [open, promptTemplate]);
+
+  useEffect(() => {
+    if (!open) return;
+    setSampleDraft(project?.styleSample ?? "");
+  }, [open, project?.id, project?.styleSample]);
 
   useEffect(() => {
     if (!open) {
@@ -460,13 +468,82 @@ export default function Settings() {
             <div className="space-y-4">
               <div>
                 <div className="mb-1.5 flex items-center justify-between">
+                  <span className="text-[11.5px] text-dim">文风预设</span>
+                  <span className="text-[10px] text-mute">作用于当前作品</span>
+                </div>
+                <div className="grid grid-cols-4 gap-1.5">
+                  {Object.values(VOICE_PRESETS).map((preset) => {
+                    const active = project?.voice === preset.id;
+                    return (
+                      <button
+                        key={preset.id}
+                        onClick={() => project && void updateProject({ voice: preset.id })}
+                        className={cx(
+                          "rounded-xl border px-2 py-2 text-left transition-colors",
+                          active
+                            ? "border-gold/45 bg-gold/8"
+                            : "border-line/70 hover:border-gold/30 hover:bg-surface2/50"
+                        )}
+                      >
+                        <div
+                          className={cx(
+                            "text-[11.5px]",
+                            active ? "text-gold" : "text-dim"
+                          )}
+                        >
+                          {preset.label}
+                        </div>
+                        <div className="mt-0.5 text-[9px] leading-snug text-mute">
+                          {preset.hint}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="mt-1.5 text-[10px] leading-relaxed text-mute">
+                  预设会把「对话优先、短句、去套语」这类细则追加在系统提示词之后；
+                  选「自定义」则只用下面的模板和你写的文风说明。
+                </p>
+              </div>
+
+              <div>
+                <div className="mb-1.5 flex items-center justify-between">
+                  <span className="text-[11.5px] text-dim">语感样本（可选）</span>
+                  <span className="text-[10px] text-mute">只学语气，不抄内容</span>
+                </div>
+                <TextArea
+                  rows={5}
+                  value={sampleDraft}
+                  onChange={(e) => setSampleDraft(e.target.value)}
+                  className="text-[11px] leading-[1.8]"
+                  placeholder="粘贴一段你希望「读起来像这样」的文字，200-500 字即可。"
+                />
+                <div className="mt-1.5 flex items-center gap-2">
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    onClick={async () => {
+                      await updateProject({ styleSample: sampleDraft });
+                      toast("语感样本已保存", "success");
+                    }}
+                  >
+                    <Check size={11} /> 保存样本
+                  </Button>
+                  <span className="text-[10px] text-mute">
+                    续写时会作为【语感样本】注入，约 {sampleDraft.length} 字
+                  </span>
+                </div>
+              </div>
+
+              <div>
+                <div className="mb-1.5 flex items-center justify-between">
                   <span className="text-[11.5px] text-dim">系统提示词模板</span>
                   <span className="text-[10px] text-mute">
                     变量：{"{{title}} {{genre}} {{pov}} {{style}}"}
                   </span>
                 </div>
                 <TextArea
-                  rows={14}
+                  rows={12}
                   value={templateDraft}
                   onChange={(e) => setTemplateDraft(e.target.value)}
                   className="font-mono text-[11px] leading-[1.8]"
