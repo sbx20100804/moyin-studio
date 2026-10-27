@@ -235,7 +235,11 @@ export const useStore = create<Store>((set, get) => ({
 
   toast(message, kind = "info") {
     const id = ++toastSeq;
-    set((s) => ({ toasts: [...s.toasts, { id, message, kind }] }));
+    set((s) => {
+      // Don't stack identical errors; keep at most 3 toasts so the UI stays usable.
+      if (s.toasts.some((t) => t.message === message && t.kind === kind)) return {};
+      return { toasts: [...s.toasts, { id, message, kind }].slice(-3) };
+    });
     setTimeout(() => get().dismissToast(id), 3200);
   },
 
@@ -527,6 +531,8 @@ export const useStore = create<Store>((set, get) => ({
   async makeDefaultProfile(id) {
     await api.setDefaultProfile(id);
     await get().loadProfiles();
+    // "Set default" should also start using it right away.
+    set({ activeProfileId: id });
   },
 
   pickProfile(id) {

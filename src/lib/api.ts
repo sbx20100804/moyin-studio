@@ -64,7 +64,10 @@ export const api = {
   deleteProfile: (id: number) => invoke<void>("delete_profile", { id }),
   setDefaultProfile: (id: number) => invoke<void>("set_default_profile", { id }),
   listModels: (profileId: number) => invoke<string[]>("list_models", { profileId }),
+  listModelsConfig: (input: ProfileInput) =>
+    invoke<string[]>("list_models_config", { input }),
   testProfile: (profileId: number) => invoke<string>("test_profile", { profileId }),
+  testConfig: (input: ProfileInput) => invoke<string>("test_config", { input }),
 
   // settings
   getSetting: (key: string) => invoke<string | null>("get_setting", { key }),

@@ -1,6 +1,7 @@
 import { AnimatePresence, motion } from "motion/react";
 import {
   Check,
+  ChevronDown,
   Cloud,
   Download,
   KeyRound,
@@ -17,11 +18,12 @@ import {
   Zap,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { getVersion } from "@tauri-apps/api/app";
 import { DEFAULT_SYSTEM_TEMPLATE, VOICE_PRESETS } from "@/lib/ai";
 import { api } from "@/lib/api";
 import { cx } from "@/lib/format";
 import { useStore } from "@/lib/store";
-import type { Profile } from "@/lib/types";
+import type { Profile, ProfileInput } from "@/lib/types";
 import { Button, Field, IconButton, Modal, Slider, Switch, TextArea, TextInput } from "./ui";
 
 type Tab = "model" | "writing" | "appearance" | "about";
@@ -57,6 +59,26 @@ const emptyForm = (isDefault: boolean): Form => ({
   isDefault,
 });
 
+function friendlyError(err: unknown) {
+  const raw = String(err);
+  if (raw.includes("401")) {
+    return "API Key 无效或格式不对。确认它以 sk- 开头，并且属于这个服务商。";
+  }
+  if (raw.includes("403")) {
+    return "没有权限或额度不足。检查这个 Key 的权限与余额。";
+  }
+  if (raw.includes("404") && /model/i.test(raw)) {
+    return "这个模型在该服务商不存在。先点「拉取列表」，从返回的模型里选一个。";
+  }
+  if (raw.includes("429")) {
+    return "请求太频繁或额度用尽，稍后再试。";
+  }
+  if (raw.includes("timeout") || raw.includes("timed out")) {
+    return "连接超时。检查接口地址与网络。";
+  }
+  return raw.length > 260 ? `${raw.slice(0, 260)}…` : raw;
+}
+
 export default function Settings() {
   const open = useStore((s) => s.settingsOpen);
   const setOpen = useStore((s) => s.setSettingsOpen);
@@ -83,7 +105,25 @@ export default function Settings() {
   const [testResult, setTestResult] = useState<{ ok: boolean; text: string } | null>(null);
   const [fetching, setFetching] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [modelOpen, setModelOpen] = useState(false);
+  const [version, setVersion] = useState("0.3.1");
   const hydrated = useRef<number>(-2);
+  const modelRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    void getVersion()
+      .then(setVersion)
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (!modelOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (!modelRef.current?.contains(e.target as Node)) setModelOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [modelOpen]);
 
   useEffect(() => {
     if (!open) {
@@ -112,6 +152,8 @@ export default function Settings() {
       profiles.find((p) => p.id === activeProfileId) ??
       profiles.find((p) => p.isDefault) ??
       profiles[0];
+    // -3 means the user just clicked "新增": keep the empty form.
+    if (hydrated.current === -3) return;
     if (target && hydrated.current !== target.id) {
       hydrated.current = target.id;
       setSelectedId(target.id);
@@ -132,11 +174,12 @@ export default function Settings() {
   const current: Profile | undefined = profiles.find((p) => p.id === form.id);
 
   const startNew = () => {
-    hydrated.current = -1;
+    hydrated.current = -3;
     setSelectedId(null);
     setForm(emptyForm(profiles.length === 0));
     setTestResult(null);
     setModels([]);
+    setModelOpen(false);
   };
 
   const save = async () => {
@@ -165,35 +208,48 @@ export default function Settings() {
     }
   };
 
+  const formInput = (): ProfileInput => ({
+    id: form.id,
+    name: form.name.trim(),
+    baseUrl: form.baseUrl.trim(),
+    model: form.model.trim(),
+    temperature: form.temperature,
+    maxTokens: form.maxTokens,
+    contextWindow: form.contextWindow,
+    isDefault: form.isDefault,
+    apiKey: form.apiKey.trim() ? form.apiKey.trim() : undefined,
+  });
+
   const runTest = async () => {
-    if (!form.id) {
-      toast("先保存配置，再测试连接", "error");
-      return;
-    }
     setTesting(true);
     setTestResult(null);
     try {
-      const reply = await api.testProfile(form.id);
+      const reply = await api.testConfig(formInput());
       setTestResult({ ok: true, text: reply });
     } catch (err) {
-      setTestResult({ ok: false, text: String(err) });
+      setTestResult({ ok: false, text: friendlyError(err) });
     } finally {
       setTesting(false);
     }
   };
 
   const fetchModels = async () => {
-    if (!form.id) {
-      toast("先保存配置，再拉取模型列表", "error");
+    if (!form.baseUrl.trim()) {
+      toast("先填写接口地址", "error");
       return;
     }
     setFetching(true);
     try {
-      const list = await api.listModels(form.id);
+      const list = await api.listModelsConfig(formInput());
       setModels(list);
-      toast(list.length ? `找到 ${list.length} 个模型` : "服务没有返回模型列表", "success");
+      if (list.length) {
+        setModelOpen(true);
+        toast(`找到 ${list.length} 个模型，点右侧箭头选择`, "success");
+      } else {
+        toast("服务没有返回模型列表", "error");
+      }
     } catch (err) {
-      toast(String(err), "error");
+      toast(friendlyError(err), "error");
     } finally {
       setFetching(false);
     }
@@ -208,7 +264,7 @@ export default function Settings() {
       width="880px"
       footer={
         <>
-          <span className="mr-auto text-[10px] text-mute">v0.1.0 · 本地单机</span>
+          <span className="mr-auto text-[10px] text-mute">v{version} · 本地单机</span>
           <Button variant="primary" onClick={() => setOpen(false)}>
             完成
           </Button>
@@ -337,19 +393,65 @@ export default function Settings() {
                   </button>
                 }
               >
-                <div className="flex gap-2">
+                <div className="relative" ref={modelRef}>
                   <TextInput
                     value={form.model}
                     onChange={(e) => setForm({ ...form, model: e.target.value })}
+                    onFocus={() => {
+                      if (models.length) setModelOpen(true);
+                    }}
                     placeholder="deepseek-chat"
-                    list="model-options"
-                    className="font-mono text-[12px]"
+                    className="pr-9 font-mono text-[12px]"
                   />
-                  <datalist id="model-options">
-                    {models.map((m) => (
-                      <option key={m} value={m} />
-                    ))}
-                  </datalist>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!models.length) {
+                        void fetchModels();
+                        return;
+                      }
+                      setModelOpen((v) => !v);
+                    }}
+                    title={models.length ? "选择拉取到的模型" : "拉取模型列表"}
+                    className="absolute right-1.5 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md text-mute transition-colors hover:bg-surface2 hover:text-gold"
+                  >
+                    <ChevronDown
+                      size={14}
+                      className={cx("transition-transform", modelOpen && "rotate-180")}
+                    />
+                  </button>
+                  {modelOpen && models.length > 0 ? (
+                    <div className="scroll-thin absolute left-0 right-0 top-full z-50 mt-1 max-h-56 overflow-y-auto rounded-xl border border-line bg-surface p-1 shadow-[var(--shadow-panel)]">
+                      {!models.includes(form.model) ? (
+                        <button
+                          type="button"
+                          onClick={() => setModelOpen(false)}
+                          className="mb-1 w-full rounded-lg px-2 py-1 text-left text-[10px] text-cinnabar/80 hover:bg-surface2"
+                        >
+                          当前模型不在列表里，建议从下面选一个
+                        </button>
+                      ) : null}
+                      {models.map((m) => (
+                        <button
+                          key={m}
+                          type="button"
+                          onClick={() => {
+                            setForm({ ...form, model: m });
+                            setModelOpen(false);
+                          }}
+                          className={cx(
+                            "flex w-full items-center gap-1.5 rounded-lg px-2 py-1.5 text-left font-mono text-[11.5px] transition-colors",
+                            m === form.model
+                              ? "bg-gold/10 text-gold"
+                              : "text-dim hover:bg-surface2"
+                          )}
+                        >
+                          {m === form.model ? <Check size={10} /> : null}
+                          <span className="truncate">{m}</span>
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
                 </div>
               </Field>
 
@@ -641,7 +743,7 @@ export default function Settings() {
                 </div>
                 <div>
                   <div className="text-[14px] text-ink">墨隐 · Novel Studio</div>
-                  <div className="text-[10.5px] text-mute">本地优先的 AI 小说创作工作台 v0.1.0</div>
+                  <div className="text-[10.5px] text-mute">本地优先的 AI 小说创作工作台 v{version}</div>
                 </div>
               </div>
               <p className="text-[11.5px] leading-[1.9] text-dim">

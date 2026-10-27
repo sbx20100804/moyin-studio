@@ -1,5 +1,5 @@
 use crate::db::{self, Db};
-use crate::models::{Entity, GenerateRequest};
+use crate::models::{Entity, GenerateRequest, ProfileInput};
 use futures_util::StreamExt;
 use serde_json::json;
 use std::collections::HashMap;
@@ -50,18 +50,27 @@ fn truncate(s: &str, n: usize) -> String {
     }
 }
 
-#[tauri::command]
-pub async fn list_models(db: State<'_, Db>, profile_id: i64) -> Result<Vec<String>, String> {
-    let (profile, key) = {
+fn resolve_input_key(db: &Db, input: &ProfileInput) -> Result<String, String> {
+    if let Some(k) = input.api_key.as_ref() {
+        let k = k.trim();
+        if !k.is_empty() {
+            return Ok(k.to_string());
+        }
+    }
+    if input.id > 0 {
         let conn = db.0.lock().map_err(|_| "数据库锁定失败".to_string())?;
-        (
-            db::get_profile(&conn, profile_id).map_err(|e| e.to_string())?,
-            db::profile_key(&conn, profile_id)?,
-        )
-    };
+        return db::profile_key(&conn, input.id);
+    }
+    Err("请先填写 API Key".into())
+}
+
+async fn request_models(base_url: &str, key: &str) -> Result<Vec<String>, String> {
+    if base_url.trim().is_empty() {
+        return Err("请先填写接口地址".into());
+    }
     let resp = client()?
-        .get(models_url(&profile.base_url))
-        .bearer_auth(&key)
+        .get(models_url(base_url))
+        .bearer_auth(key)
         .send()
         .await
         .map_err(|e| format!("连接失败: {e}"))?;
@@ -98,19 +107,41 @@ pub async fn list_models(db: State<'_, Db>, profile_id: i64) -> Result<Vec<Strin
 }
 
 #[tauri::command]
-pub async fn test_profile(db: State<'_, Db>, profile_id: i64) -> Result<String, String> {
-    let (profile, key) = {
+pub async fn list_models(db: State<'_, Db>, profile_id: i64) -> Result<Vec<String>, String> {
+    let (base_url, key) = {
         let conn = db.0.lock().map_err(|_| "数据库锁定失败".to_string())?;
         (
-            db::get_profile(&conn, profile_id).map_err(|e| e.to_string())?,
+            db::get_profile(&conn, profile_id)
+                .map_err(|e| e.to_string())?
+                .base_url,
             db::profile_key(&conn, profile_id)?,
         )
     };
+    request_models(&base_url, &key).await
+}
+
+/// Fetch models using the values currently in the form (unsaved edits included).
+#[tauri::command]
+pub async fn list_models_config(
+    db: State<'_, Db>,
+    input: ProfileInput,
+) -> Result<Vec<String>, String> {
+    let key = resolve_input_key(&db, &input)?;
+    request_models(&input.base_url, &key).await
+}
+
+async fn request_test(base_url: &str, model: &str, key: &str) -> Result<String, String> {
+    if base_url.trim().is_empty() {
+        return Err("请先填写接口地址".into());
+    }
+    if model.trim().is_empty() {
+        return Err("请先填写模型名".into());
+    }
     if key.is_empty() {
         return Err("请先填写 API Key".into());
     }
     let body = json!({
-        "model": profile.model,
+        "model": model,
         "messages": [
             {"role": "system", "content": "你是连通性测试助手。"},
             {"role": "user", "content": "只回复四个字：连接成功"}
@@ -119,8 +150,8 @@ pub async fn test_profile(db: State<'_, Db>, profile_id: i64) -> Result<String, 
         "stream": false
     });
     let resp = client()?
-        .post(chat_url(&profile.base_url))
-        .bearer_auth(&key)
+        .post(chat_url(base_url))
+        .bearer_auth(key)
         .json(&body)
         .send()
         .await
@@ -147,6 +178,25 @@ pub async fn test_profile(db: State<'_, Db>, profile_id: i64) -> Result<String, 
     } else {
         truncate(&reply, 80)
     })
+}
+
+#[tauri::command]
+pub async fn test_profile(db: State<'_, Db>, profile_id: i64) -> Result<String, String> {
+    let (profile, key) = {
+        let conn = db.0.lock().map_err(|_| "数据库锁定失败".to_string())?;
+        (
+            db::get_profile(&conn, profile_id).map_err(|e| e.to_string())?,
+            db::profile_key(&conn, profile_id)?,
+        )
+    };
+    request_test(&profile.base_url, &profile.model, &key).await
+}
+
+/// Test using the values currently in the form (unsaved edits included).
+#[tauri::command]
+pub async fn test_config(db: State<'_, Db>, input: ProfileInput) -> Result<String, String> {
+    let key = resolve_input_key(&db, &input)?;
+    request_test(&input.base_url, &input.model, &key).await
 }
 
 #[tauri::command]
