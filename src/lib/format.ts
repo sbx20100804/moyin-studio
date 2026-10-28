@@ -7,7 +7,8 @@ export function countWords(text: string) {
 }
 
 export function estimateTokens(text: string) {
-  return Math.max(1, Math.round(text.length / 1.6));
+  // 中文实际约 1.2–1.4 字/token；用 1.6 会低估 token，长章容易顶爆上下文。
+  return Math.max(1, Math.round(text.length / 1.35));
 }
 
 export function formatCount(n: number) {
@@ -62,8 +63,28 @@ export function readingMinutes(words: number) {
 
 export function cleanGenerated(text: string) {
   return text
-    .replace(/^\s*(好的|当然|以下是|这是)[^\n]{0,20}\n+/, "")
+    .replace(/^\s*(好的|当然|以下是|这是|收到|明白|了解)[^\n]{0,30}\n+/, "")
     .replace(/^```[a-zA-Z]*\n?/, "")
     .replace(/\n?```\s*$/, "")
     .trim();
+}
+
+const META_HINTS = [
+  "没有附上",
+  "请提供",
+  "收到后我",
+  "我会先",
+  "如果你想先",
+  "无法从",
+  "没法从",
+  "按你的设定替换",
+];
+
+/** True when the model replied with an explanation instead of prose. */
+export function looksLikeMeta(text: string) {
+  const clean = text.trim();
+  if (clean.length > 900) return false;
+  const hits = META_HINTS.filter((h) => clean.includes(h)).length;
+  const quotes = clean.split(/[“”]/).length - 1;
+  return hits >= 2 && quotes < 2;
 }

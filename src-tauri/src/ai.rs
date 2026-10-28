@@ -1,5 +1,5 @@
 use crate::db::{self, Db};
-use crate::models::{Entity, GenerateRequest, ProfileInput};
+use crate::models::{Entity, GenerateRequest, ProfileInput, SettingsCandidate};
 use futures_util::StreamExt;
 use serde_json::json;
 use std::collections::HashMap;
@@ -562,6 +562,228 @@ pub async fn generate_outline(
     Ok(raw)
 }
 
+fn clean_name_lines(raw: &str, prefix: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for line in raw.lines() {
+        let mut s = line.trim();
+        s = s.trim_start_matches(|c: char| {
+            c.is_ascii_digit() || matches!(c, '.' | '、' | ')' | '）' | '(' | '（' | '-' | '·' | ' ')
+        });
+        s = s
+            .trim()
+            .trim_matches(|c| matches!(c, '"' | '“' | '”' | '『' | '』' | '「' | '」'))
+            .trim_start_matches("标题：")
+            .trim_start_matches("标题:")
+            .trim();
+        if s.is_empty() || s.chars().count() > 24 {
+            continue;
+        }
+        let name = if !s.starts_with('第') && !prefix.is_empty() {
+            format!("{prefix} {s}")
+        } else {
+            s.to_string()
+        };
+        if !out.contains(&name) {
+            out.push(name);
+        }
+        if out.len() == 3 {
+            break;
+        }
+    }
+    out
+}
+
+/// Suggest a chapter title from the outline and current text. Does not write.
+#[tauri::command]
+pub async fn generate_title(
+    db: State<'_, Db>,
+    chapter_id: i64,
+    profile_id: i64,
+) -> Result<Vec<String>, String> {
+    let (profile, key, chapter, project) = {
+        let conn = db.0.lock().map_err(|_| "数据库锁定失败".to_string())?;
+        let profile = db::get_profile(&conn, profile_id).map_err(|e| e.to_string())?;
+        let key = db::profile_key(&conn, profile_id)?;
+        let chapter = db::get_chapter(&conn, chapter_id).map_err(|e| e.to_string())?;
+        let project = db::get_project(&conn, chapter.meta.project_id).map_err(|e| e.to_string())?;
+        (profile, key, chapter, project)
+    };
+    if key.is_empty() {
+        return Err("尚未配置 API Key".into());
+    }
+    let content = chapter.content.trim();
+    let outline = chapter.meta.outline.trim();
+    if content.is_empty() && outline.is_empty() {
+        return Err("本章还没有正文或章纲，先写一点再命名".into());
+    }
+
+    // Give the model both the opening and the ending: the opening usually sets
+    // the scene, the ending carries the hook. A tail-only excerpt invites
+    // titles about some random last-minute object.
+    let chars: Vec<char> = content.chars().collect();
+    let excerpt = if chars.len() <= 3200 {
+        content.to_string()
+    } else {
+        let head: String = chars[..1600].iter().collect();
+        let tail: String = chars[chars.len() - 1600..].iter().collect();
+        format!("{head}\n\n……（中间略）……\n\n{tail}")
+    };
+    let prefix = chapter
+        .meta
+        .title
+        .split_whitespace()
+        .next()
+        .filter(|s| s.starts_with('第') && s.contains('章'))
+        .unwrap_or("")
+        .to_string();
+
+    let user = format!(
+        "作品：{}\n类型：{}\n视角：{}\n\n【本章章纲】\n{}\n\n【本章摘要】\n{}\n\n【本章正文】\n{}\n\n请给这一章拟 3 个标题候选。",
+        project.title,
+        project.genre,
+        project.pov,
+        if outline.is_empty() { "（无）" } else { outline },
+        if chapter.meta.summary.trim().is_empty() { "（无）" } else { chapter.meta.summary.trim() },
+        if excerpt.trim().is_empty() { "（尚未动笔）" } else { excerpt.trim() }
+    );
+
+    let body = json!({
+        "model": profile.model,
+        "messages": [
+            {
+                "role": "system",
+                "content": "你是中文小说编辑。为给定章节拟 3 个标题候选，每行一个。\n规则：\n1. 标题必须来自本章实际写到的事件、场景或物件；正文和摘要里没有出现过的意象不要用。\n2. 优先具体事件或物品（换座、补习、最后一瓶汽水），不要抽象抒情，不要用“枕边”“那颗”这种悬而未决的意象。\n3. 四到十个字，不加序号、引号或句号，不剧透结尾。\n4. 只输出这 3 行，不要解释。"
+            },
+            { "role": "user", "content": user }
+        ],
+        "temperature": 0.6,
+        "max_tokens": 90,
+        "stream": false
+    });
+
+    let resp = client()?
+        .post(chat_url(&profile.base_url))
+        .bearer_auth(&key)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("连接失败: {e}"))?;
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(format!("模型返回 {}：{}", status.as_u16(), truncate(&text, 300)));
+    }
+    let value: serde_json::Value =
+        serde_json::from_str(&text).map_err(|_| "返回内容不是合法 JSON".to_string())?;
+    let raw = value
+        .pointer("/choices/0/message/content")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+
+    let titles = clean_name_lines(&raw, &prefix);
+    if titles.is_empty() {
+        return Err("模型没有返回标题，再试一次".into());
+    }
+    Ok(titles)
+}
+
+/// Suggest volume names (3 candidates) from the chapters in that volume.
+#[tauri::command]
+pub async fn generate_volume_name(
+    db: State<'_, Db>,
+    chapter_id: i64,
+    profile_id: i64,
+) -> Result<Vec<String>, String> {
+    let (profile, key, chapter, project, chapters) = {
+        let conn = db.0.lock().map_err(|_| "数据库锁定失败".to_string())?;
+        let profile = db::get_profile(&conn, profile_id).map_err(|e| e.to_string())?;
+        let key = db::profile_key(&conn, profile_id)?;
+        let chapter = db::get_chapter(&conn, chapter_id).map_err(|e| e.to_string())?;
+        let project = db::get_project(&conn, chapter.meta.project_id).map_err(|e| e.to_string())?;
+        let chapters = db::list_chapters(&conn, chapter.meta.project_id).map_err(|e| e.to_string())?;
+        (profile, key, chapter, project, chapters)
+    };
+    if key.is_empty() {
+        return Err("尚未配置 API Key".into());
+    }
+
+    let volume = chapter.meta.volume.trim();
+    let peers: Vec<&crate::models::ChapterMeta> = if volume.is_empty() {
+        chapters.iter().take(3).collect()
+    } else {
+        chapters.iter().filter(|c| c.volume.trim() == volume).collect()
+    };
+    let mut digest = String::new();
+    for c in peers.iter().take(12) {
+        if !c.summary.trim().is_empty() {
+            digest.push_str(&format!("{}：{}\n", c.title, c.summary.trim()));
+        }
+    }
+    let outline = chapter.meta.outline.trim();
+    if digest.trim().is_empty() && outline.is_empty() && chapter.content.trim().is_empty() {
+        return Err("这一卷还没有正文或摘要，先写一点再命名".into());
+    }
+
+    let prefix = volume
+        .split_whitespace()
+        .next()
+        .filter(|s| s.starts_with('第') && s.contains('卷'))
+        .unwrap_or("第一卷")
+        .to_string();
+
+    let user = format!(
+        "作品：{}\n类型：{}\n\n【故事梗概】\n{}\n\n【本卷章节摘要】\n{}\n\n【当前章章纲】\n{}\n\n请为这一卷拟 3 个卷名候选。",
+        project.title,
+        project.genre,
+        if project.synopsis.trim().is_empty() { "（无）" } else { project.synopsis.trim() },
+        if digest.trim().is_empty() { "（暂无）" } else { digest.trim() },
+        if outline.is_empty() { "（无）" } else { outline }
+    );
+
+    let body = json!({
+        "model": profile.model,
+        "messages": [
+            {
+                "role": "system",
+                "content": "你是中文小说编辑。为给定的一卷拟 3 个卷名候选，每行一个，格式「第X卷 标题」。\n规则：\n1. 卷名必须来自这一卷实际写到的事件、场景或物件；没出现过的意象不要用。\n2. 四到八个字，具体、好记，不要抽象抒情。\n3. 不加序号、引号或句号，不剧透结局。\n4. 只输出这 3 行，不要解释。"
+            },
+            { "role": "user", "content": user }
+        ],
+        "temperature": 0.6,
+        "max_tokens": 90,
+        "stream": false
+    });
+
+    let resp = client()?
+        .post(chat_url(&profile.base_url))
+        .bearer_auth(&key)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("连接失败: {e}"))?;
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(format!("模型返回 {}：{}", status.as_u16(), truncate(&text, 300)));
+    }
+    let value: serde_json::Value =
+        serde_json::from_str(&text).map_err(|_| "返回内容不是合法 JSON".to_string())?;
+    let raw = value
+        .pointer("/choices/0/message/content")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+
+    let names = clean_name_lines(&raw, &prefix);
+    if names.is_empty() {
+        return Err("模型没有返回卷名，再试一次".into());
+    }
+    Ok(names)
+}
+
 /// Extract new characters / places / items from a chapter and store them.
 #[tauri::command]
 pub async fn extract_entities(
@@ -679,4 +901,160 @@ pub async fn extract_entities(
         }
     }
     Ok(saved)
+}
+
+fn candidate_field(item: &serde_json::Value, keys: &[&str]) -> String {
+    for key in keys {
+        if let Some(v) = item.get(*key).and_then(|v| v.as_str()) {
+            let t = v.trim();
+            if !t.is_empty() {
+                return t.to_string();
+            }
+        }
+    }
+    String::new()
+}
+
+fn build_candidates(items: &[serde_json::Value]) -> Vec<SettingsCandidate> {
+    let allowed = ["character", "location", "faction", "item", "concept"];
+    let mut out: Vec<SettingsCandidate> = Vec::new();
+    for item in items.iter().take(24) {
+        let name = candidate_field(item, &["name", "title"]);
+        if name.is_empty() || out.iter().any(|c| c.name == name) {
+            continue;
+        }
+        let kind_raw = candidate_field(item, &["kind", "type"]).to_lowercase();
+        let kind = if allowed.contains(&kind_raw.as_str()) {
+            kind_raw
+        } else {
+            "concept".to_string()
+        };
+        let mut speech_length =
+            candidate_field(item, &["speechLength", "speech_length"]).to_lowercase();
+        if !["short", "medium", "long"].contains(&speech_length.as_str()) {
+            speech_length = "medium".to_string();
+        }
+        out.push(SettingsCandidate {
+            kind,
+            name,
+            aliases: candidate_field(item, &["aliases", "alias"]),
+            role: candidate_field(item, &["role", "identity"]),
+            description: candidate_field(item, &["description", "desc"])
+                .chars()
+                .take(200)
+                .collect(),
+            speech_style: candidate_field(item, &["speechStyle", "speech_style"]),
+            speech_length,
+            speech_words: candidate_field(item, &["speechWords", "speech_words"]),
+            speech_taboo: candidate_field(item, &["speechTaboo", "speech_taboo"]),
+            source: candidate_field(item, &["source", "quote", "evidence"])
+                .chars()
+                .take(80)
+                .collect(),
+        });
+    }
+    out
+}
+
+/// 从一段任意文本里识别设定候选。只返回结果，不写库，由用户预览确认后再入库。
+#[tauri::command]
+pub async fn extract_settings(
+    db: State<'_, Db>,
+    text: String,
+    project_id: i64,
+    profile_id: i64,
+) -> Result<Vec<SettingsCandidate>, String> {
+    let trimmed = text.trim();
+    if trimmed.chars().count() < 8 {
+        return Err("内容太短，至少粘贴一段话".into());
+    }
+    let excerpt: String = trimmed.chars().take(20000).collect();
+
+    let (profile, key, existing) = {
+        let conn = db.0.lock().map_err(|_| "数据库锁定失败".to_string())?;
+        let profile = db::get_profile(&conn, profile_id).map_err(|e| e.to_string())?;
+        let key = db::profile_key(&conn, profile_id)?;
+        let existing = db::list_entities(&conn, project_id).map_err(|e| e.to_string())?;
+        (profile, key, existing)
+    };
+    if key.is_empty() {
+        return Err("尚未配置 API Key".into());
+    }
+
+    let known = existing
+        .iter()
+        .map(|e| e.name.as_str())
+        .collect::<Vec<_>>()
+        .join("、");
+    let known = if known.is_empty() {
+        "（无）".to_string()
+    } else {
+        known
+    };
+
+    let system = r#"你是小说设定整理助手。用户会给一段文字（人物小传、大纲、片段、设定草稿），从中抽取值得长期记住的设定，只输出 JSON 数组，不要 markdown 代码块，不要解释。
+每项字段：
+- kind：character / location / faction / item / concept
+- name：名称，人物用本名
+- aliases：别名或称呼，逗号分隔，可为空
+- role：身份标签，10 字以内，可为空
+- description：60 字以内，写关键特征、动机、与主角的关系
+- speechStyle：口癖 / 语气，只对人物，可为空
+- speechLength：short / medium / long，不确定填 medium
+- speechWords：常用词，逗号分隔，可为空
+- speechTaboo：不符合这个人物的词，逗号分隔，可为空
+- source：原文中支撑这条设定的一句话，30 字以内
+规则：只抽取文本里真实出现的，不要脑补；同一人物的不同称呼合并成一条；人物最多 12 条，其他类型合计最多 12 条；没有的字段给空字符串。"#;
+
+    let body = json!({
+        "model": profile.model,
+        "messages": [
+            { "role": "system", "content": system },
+            { "role": "user", "content": format!("已有设定（不要重复）：{}\n\n待整理文本：\n{}", known, excerpt) }
+        ],
+        "temperature": 0.2,
+        "max_tokens": 1800,
+        "stream": false
+    });
+
+    let resp = client()?
+        .post(chat_url(&profile.base_url))
+        .bearer_auth(&key)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("连接失败: {e}"))?;
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(format!("模型返回 {}：{}", status.as_u16(), truncate(&text, 300)));
+    }
+    let payload: serde_json::Value =
+        serde_json::from_str(&text).map_err(|_| "返回内容不是合法 JSON".to_string())?;
+    let raw = payload
+        .pointer("/choices/0/message/content")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let json_text = match (raw.find('['), raw.rfind(']')) {
+        (Some(a), Some(b)) if b > a => &raw[a..=b],
+        _ => return Err("模型没有返回有效的设定数组".into()),
+    };
+    let parsed: serde_json::Value =
+        serde_json::from_str(json_text).map_err(|e| format!("解析设定失败: {e}"))?;
+    let items = if let Some(arr) = parsed.as_array() {
+        arr.clone()
+    } else {
+        ["entities", "items", "settings", "data"]
+            .iter()
+            .find_map(|k| parsed.get(*k).and_then(|v| v.as_array()).cloned())
+            .ok_or_else(|| "模型没有返回有效的设定数组".to_string())?
+    };
+
+    let out = build_candidates(&items);
+    if out.is_empty() {
+        return Err("没有识别出可用的设定，换一段文字再试".into());
+    }
+    Ok(out)
 }

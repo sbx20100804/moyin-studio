@@ -15,11 +15,14 @@ import type {
   Project,
   SearchHit,
   Selection,
+  SettingsCandidate,
   Thread,
 } from "./types";
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let toastSeq = 0;
+/** 关闭流程重入锁：保存 → destroy 只走一次 */
+let closing = false;
 
 export type View = "write" | "outline" | "bible" | "threads";
 
@@ -35,6 +38,8 @@ export interface Toast {
   id: number;
   message: string;
   kind: "info" | "success" | "error";
+  /** 可选操作（例如「撤销」），带操作时停留更久 */
+  action?: { label: string; run: () => void | Promise<void> };
 }
 
 interface Store {
@@ -73,11 +78,12 @@ interface Store {
   stats: DailyStat[];
   statsOpen: boolean;
   searchOpen: boolean;
+  onboardingOpen: boolean;
 
   bootstrap: () => Promise<void>;
   setTheme: (theme: "dark" | "light") => void;
   toggleTheme: () => void;
-  toast: (message: string, kind?: Toast["kind"]) => void;
+  toast: (message: string, kind?: Toast["kind"], action?: Toast["action"]) => void;
   dismissToast: (id: number) => void;
 
   openProject: (id: number) => Promise<void>;
@@ -88,6 +94,8 @@ interface Store {
   openChapter: (id: number) => Promise<void>;
   setDraft: (patch: Partial<{ title: string; content: string }>) => void;
   saveNow: () => Promise<boolean>;
+  /** 保存成功后真正关闭窗口；保存失败则留在应用里 */
+  requestClose: () => Promise<void>;
   createChapter: () => Promise<void>;
   removeChapter: (id: number) => Promise<void>;
   renameChapter: (id: number, title: string) => Promise<void>;
@@ -98,10 +106,16 @@ interface Store {
     patch: Partial<{ title: string; summary: string; outline: string; volume: string; status: string }>
   ) => Promise<void>;
   generateOutline: (chapterId: number) => Promise<string | null>;
+  suggestChapterTitle: (chapterId: number) => Promise<string[] | null>;
+  suggestVolumeName: (chapterId: number) => Promise<string[] | null>;
 
   loadEntities: () => Promise<void>;
-  saveEntity: (entity: Entity) => Promise<void>;
+  saveEntity: (entity: Entity, opts?: { silent?: boolean }) => Promise<void>;
   removeEntity: (id: number) => Promise<void>;
+  /** 从一段任意文本识别设定候选，不写库 */
+  extractSettings: (text: string) => Promise<SettingsCandidate[] | null>;
+  /** 批量写入设定，返回真正落库的条目（用于撤销） */
+  importEntities: (list: Entity[]) => Promise<Entity[]>;
 
   loadProfiles: () => Promise<void>;
   saveProfile: (input: ProfileInput) => Promise<Profile | null>;
@@ -117,6 +131,8 @@ interface Store {
   setPaletteOpen: (v: boolean) => void;
   setStatsOpen: (v: boolean) => void;
   setSearchOpen: (v: boolean) => void;
+  setOnboardingOpen: (v: boolean) => void;
+  finishOnboarding: () => Promise<void>;
   setSelection: (sel: Selection | null) => void;
   setCaret: (pos: number | null) => void;
   setCaretRequest: (pos: number | null) => void;
@@ -191,16 +207,18 @@ export const useStore = create<Store>((set, get) => ({
   stats: [],
   statsOpen: false,
   searchOpen: false,
+  onboardingOpen: false,
 
   async bootstrap() {
     try {
       applyTheme("dark");
-      const [projects, profiles, themeSetting, last, template] = await Promise.all([
+      const [projects, profiles, themeSetting, last, template, onboarded] = await Promise.all([
         api.listProjects(),
         api.listProfiles(),
         api.getSetting("theme"),
         api.getSetting("last_project_id"),
         api.getSetting("prompt_system"),
+        api.getSetting("onboarded"),
       ]);
       const theme = themeSetting === "light" ? "light" : "dark";
       applyTheme(theme);
@@ -218,6 +236,7 @@ export const useStore = create<Store>((set, get) => ({
         const target = projects.find((p) => p.id === wanted) ?? projects[0];
         await get().openProject(target.id);
       }
+      if (onboarded !== "1") set({ onboardingOpen: true });
     } catch (err) {
       set({ booted: true, bootError: String(err) });
     }
@@ -233,14 +252,14 @@ export const useStore = create<Store>((set, get) => ({
     get().setTheme(get().theme === "dark" ? "light" : "dark");
   },
 
-  toast(message, kind = "info") {
+  toast(message, kind = "info", action) {
     const id = ++toastSeq;
     set((s) => {
       // Don't stack identical errors; keep at most 3 toasts so the UI stays usable.
       if (s.toasts.some((t) => t.message === message && t.kind === kind)) return {};
-      return { toasts: [...s.toasts, { id, message, kind }].slice(-3) };
+      return { toasts: [...s.toasts, { id, message, kind, action }].slice(-3) };
     });
-    setTimeout(() => get().dismissToast(id), 3200);
+    setTimeout(() => get().dismissToast(id), action ? 6500 : 3200);
   },
 
   dismissToast(id) {
@@ -392,6 +411,23 @@ export const useStore = create<Store>((set, get) => ({
     }
   },
 
+  async requestClose() {
+    if (closing) return;
+    closing = true;
+    try {
+      const saved = await get().saveNow();
+      if (!saved) {
+        closing = false;
+        get().toast("保存失败，已取消关闭，避免丢稿", "error");
+        return;
+      }
+      await api.close();
+    } catch (err) {
+      closing = false;
+      get().toast(`关闭失败：${err}`, "error");
+    }
+  },
+
   async createChapter() {
     const { activeProjectId, chapters } = get();
     if (activeProjectId == null) return;
@@ -481,7 +517,7 @@ export const useStore = create<Store>((set, get) => ({
     set({ entities });
   },
 
-  async saveEntity(entity) {
+  async saveEntity(entity: Entity, opts?: { silent?: boolean }) {
     const saved = await api.upsertEntity(entity);
     set((s) => {
       const exists = s.entities.some((e) => e.id === saved.id);
@@ -490,13 +526,73 @@ export const useStore = create<Store>((set, get) => ({
         : [...s.entities, saved];
       return { entities };
     });
-    get().toast("设定已保存", "success");
+    if (!opts?.silent) get().toast("设定已保存", "success");
   },
 
   async removeEntity(id) {
     await api.deleteEntity(id);
     set((s) => ({ entities: s.entities.filter((e) => e.id !== id) }));
     get().toast("设定已删除");
+  },
+
+  async extractSettings(text) {
+    const s = get();
+    if (s.activeProjectId == null) {
+      get().toast("先打开一个作品", "error");
+      return null;
+    }
+    const profile =
+      s.profiles.find((p) => p.id === s.activeProfileId) ??
+      s.profiles.find((p) => p.isDefault) ??
+      s.profiles[0];
+    if (!profile) {
+      get().toast("还没有模型配置，无法识别设定", "error");
+      return null;
+    }
+    if (!profile.hasKey) {
+      get().toast("该模型还没有填写 API Key", "error");
+      return null;
+    }
+    try {
+      return await api.extractSettings(text, s.activeProjectId, profile.id);
+    } catch (err) {
+      get().toast(`识别失败：${err}`, "error");
+      return null;
+    }
+  },
+
+  async importEntities(list) {
+    const saved: Entity[] = [];
+    for (const entity of list) {
+      try {
+        saved.push(await api.upsertEntity(entity));
+      } catch (err) {
+        get().toast(`写入失败：${err}`, "error");
+      }
+    }
+    if (!saved.length) return saved;
+    set((s) => {
+      const map = new Map(s.entities.map((e) => [e.id, e]));
+      for (const row of saved) map.set(row.id, row);
+      return { entities: Array.from(map.values()) };
+    });
+    get().toast(`已加入 ${saved.length} 条设定`, "success", {
+      label: "撤销",
+      run: async () => {
+        for (const row of saved) {
+          try {
+            await api.deleteEntity(row.id);
+          } catch {
+            /* 条目可能已被手动删除，忽略 */
+          }
+        }
+        set((s) => ({
+          entities: s.entities.filter((e) => !saved.some((x) => x.id === e.id)),
+        }));
+        get().toast("已撤销本次导入");
+      },
+    });
+    return saved;
   },
 
   async loadProfiles() {
@@ -562,6 +658,13 @@ export const useStore = create<Store>((set, get) => ({
   },
   setSearchOpen(searchOpen) {
     set({ searchOpen });
+  },
+  setOnboardingOpen(onboardingOpen) {
+    set({ onboardingOpen });
+  },
+  async finishOnboarding() {
+    set({ onboardingOpen: false });
+    await api.setSetting("onboarded", "1");
   },
   setSelection(selection) {
     set({ selection });
@@ -976,7 +1079,55 @@ export const useStore = create<Store>((set, get) => ({
     await api.updateChapterMeta(id, patch);
     set((s) => ({
       chapters: s.chapters.map((c) => (c.id === id ? { ...c, ...patch } : c)),
+      draft:
+        s.activeChapterId === id && s.draft && patch.title
+          ? { ...s.draft, title: patch.title }
+          : s.draft,
     }));
+  },
+
+  async suggestChapterTitle(chapterId) {
+    const s = get();
+    const profile =
+      s.profiles.find((p) => p.id === s.activeProfileId) ??
+      s.profiles.find((p) => p.isDefault) ??
+      s.profiles[0];
+    if (!profile) {
+      get().toast("还没有模型配置，无法命名", "error");
+      return null;
+    }
+    if (!profile.hasKey) {
+      get().toast("该模型还没有填写 API Key", "error");
+      return null;
+    }
+    try {
+      return await api.generateTitle(chapterId, profile.id);
+    } catch (err) {
+      get().toast(`AI 命名失败：${err}`, "error");
+      return null;
+    }
+  },
+
+  async suggestVolumeName(chapterId) {
+    const s = get();
+    const profile =
+      s.profiles.find((p) => p.id === s.activeProfileId) ??
+      s.profiles.find((p) => p.isDefault) ??
+      s.profiles[0];
+    if (!profile) {
+      get().toast("还没有模型配置，无法命名", "error");
+      return null;
+    }
+    if (!profile.hasKey) {
+      get().toast("该模型还没有填写 API Key", "error");
+      return null;
+    }
+    try {
+      return await api.generateVolumeName(chapterId, profile.id);
+    } catch (err) {
+      get().toast(`AI 卷名失败：${err}`, "error");
+      return null;
+    }
   },
 
   async generateOutline(chapterId) {

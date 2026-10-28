@@ -41,7 +41,9 @@ fn win_is_maximized(win: tauri::WebviewWindow) -> Result<bool, String> {
 
 #[tauri::command]
 fn win_close(win: tauri::WebviewWindow) -> Result<(), String> {
-    win.close().map_err(|e| e.to_string())
+    // destroy() 不会再触发 close-requested：前端此时已经保存过，
+    // 避免 win.close() → 事件 → win_close() → win.close() 的递归。
+    win.destroy().map_err(|e| e.to_string())
 }
 
 // ---------------------------------------------------------------- projects
@@ -467,7 +469,10 @@ pub fn run() {
             ai::test_config,
             ai::summarize_chapter,
             ai::generate_outline,
+            ai::generate_title,
+            ai::generate_volume_name,
             ai::extract_entities,
+            ai::extract_settings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -4,7 +4,17 @@ import { cx } from "@/lib/format";
 import { useStore } from "@/lib/store";
 import { Button, Field, Modal, Select, TextArea, TextInput } from "./ui";
 
-const GENRES = ["古风悬疑", "都市", "科幻", "奇幻", "武侠", "言情", "历史", "悬疑推理"];
+const GENRES = [
+  "古风悬疑",
+  "都市",
+  "科幻",
+  "奇幻",
+  "武侠",
+  "言情",
+  "历史",
+  "悬疑推理",
+  "日本校园轻小说",
+];
 
 const POVS = ["第三人称", "第三人称限知", "第一人称", "双视角交替", "全知视角"];
 
@@ -174,8 +184,10 @@ export default function ProjectModal() {
           ) : (
             <div className="flex items-start gap-2 rounded-xl border border-line/60 bg-surface2/25 p-3 text-[10.5px] leading-relaxed text-mute">
               <BookPlus size={13} className="mt-0.5 shrink-0 text-gold/70" />
-              创建后会生成第一章空白稿。你可以在「作品设置」里补充梗概、文风与目标字数，
-              这些会直接影响 AI 的续写风格。
+              <span>
+                创建后会生成第一章空白稿。你可以在「作品设置」里补充梗概、文风与目标字数，
+                这些会直接影响 AI 的续写风格。
+              </span>
             </div>
           )}
         </div>

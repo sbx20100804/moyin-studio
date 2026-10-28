@@ -80,10 +80,15 @@ export default function Editor() {
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [summaryOpen, setSummaryOpen] = useState(false);
+  const [titleText, setTitleText] = useState("");
   const [summaryText, setSummaryText] = useState("");
   const [outlineText, setOutlineText] = useState("");
   const [volumeText, setVolumeText] = useState("");
   const [statusValue, setStatusValue] = useState("draft");
+  const [titleBusy, setTitleBusy] = useState(false);
+  const [titleSuggestions, setTitleSuggestions] = useState<string[]>([]);
+  const [volumeBusy, setVolumeBusy] = useState(false);
+  const [volumeSuggestions, setVolumeSuggestions] = useState<string[]>([]);
   const [summaryBusy, setSummaryBusy] = useState(false);
   const [outlineBusy, setOutlineBusy] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -206,9 +211,12 @@ export default function Editor() {
         </button>
         <button
           onClick={() => {
+            setTitleText(chapter.title);
+            setTitleSuggestions([]);
             setSummaryText(chapter.summary);
             setOutlineText(chapter.outline);
             setVolumeText(chapter.volume);
+            setVolumeSuggestions([]);
             setStatusValue(chapter.status || "draft");
             setSummaryOpen(true);
           }}
@@ -379,6 +387,7 @@ export default function Editor() {
               variant="primary"
               onClick={() => {
                 void updateChapterMeta(chapter.id, {
+                  title: titleText.trim() || chapter.title,
                   summary: summaryText.trim(),
                   outline: outlineText.trim(),
                   volume: volumeText.trim(),
@@ -393,15 +402,101 @@ export default function Editor() {
         }
       >
         <div className="space-y-3.5">
+          <label className="block">
+            <span className="mb-1.5 block text-[11.5px] text-dim">章节名</span>
+            <div className="flex items-center gap-2">
+              <input
+                value={titleText}
+                onChange={(e) => setTitleText(e.target.value)}
+                placeholder="第一章 未命名"
+                className="min-w-0 flex-1 rounded-xl border border-line/80 bg-surface2/40 px-3 py-2 font-serif text-[13.5px] text-ink outline-none focus:border-gold/50"
+              />
+              <Button
+                variant="outline"
+                size="sm"
+                loading={titleBusy}
+                onClick={async () => {
+                  setTitleBusy(true);
+                  const list = await useStore.getState().suggestChapterTitle(chapter.id);
+                  if (list?.length) {
+                    setTitleSuggestions(list);
+                    setTitleText(list[0]);
+                  }
+                  setTitleBusy(false);
+                }}
+              >
+                <Wand2 size={11} /> AI 命名
+              </Button>
+            </div>
+            <span className="mt-1 block text-[9.5px] text-mute">
+              按本章正文、摘要与章纲起名；生成后可以先改再保存
+            </span>
+            {titleSuggestions.length > 1 ? (
+              <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                <span className="text-[9.5px] text-mute">换一个：</span>
+                {titleSuggestions.map((s) => (
+                  <button
+                    key={s}
+                    onClick={() => setTitleText(s)}
+                    className={cx(
+                      "rounded-full border px-2 py-0.5 text-[10px] transition-colors",
+                      s === titleText
+                        ? "border-gold/50 bg-gold/10 text-gold"
+                        : "border-line/80 text-mute hover:border-gold/40 hover:text-dim"
+                    )}
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </label>
+
           <div className="grid grid-cols-2 gap-3">
             <label className="block">
               <span className="mb-1.5 block text-[11.5px] text-dim">卷名</span>
-              <input
-                value={volumeText}
-                onChange={(e) => setVolumeText(e.target.value)}
-                placeholder="第一卷 河灯"
-                className="w-full rounded-xl border border-line/80 bg-surface2/40 px-3 py-2 text-[12px] text-ink outline-none focus:border-gold/50"
-              />
+              <div className="flex items-center gap-1.5">
+                <input
+                  value={volumeText}
+                  onChange={(e) => setVolumeText(e.target.value)}
+                  placeholder="第一卷 河灯"
+                  className="min-w-0 flex-1 rounded-xl border border-line/80 bg-surface2/40 px-3 py-2 text-[12px] text-ink outline-none focus:border-gold/50"
+                />
+                <Button
+                  variant="outline"
+                  size="sm"
+                  loading={volumeBusy}
+                  onClick={async () => {
+                    setVolumeBusy(true);
+                    const list = await useStore.getState().suggestVolumeName(chapter.id);
+                    if (list?.length) {
+                      setVolumeSuggestions(list);
+                      setVolumeText(list[0]);
+                    }
+                    setVolumeBusy(false);
+                  }}
+                >
+                  <Wand2 size={11} /> AI
+                </Button>
+              </div>
+              {volumeSuggestions.length > 1 ? (
+                <div className="mt-1.5 flex flex-wrap gap-1">
+                  {volumeSuggestions.map((s) => (
+                    <button
+                      key={s}
+                      onClick={() => setVolumeText(s)}
+                      className={cx(
+                        "rounded-full border px-1.5 py-0.5 text-[9.5px] transition-colors",
+                        s === volumeText
+                          ? "border-gold/50 bg-gold/10 text-gold"
+                          : "border-line/80 text-mute hover:border-gold/40 hover:text-dim"
+                      )}
+                    >
+                      {s}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
             </label>
             <label className="block">
               <span className="mb-1.5 block text-[11.5px] text-dim">状态</span>

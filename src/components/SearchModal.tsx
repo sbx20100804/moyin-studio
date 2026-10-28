@@ -93,7 +93,7 @@ export default function SearchModal() {
           disabled={!q.trim() || !draft || chapterMatches === 0}
           onClick={() => {
             if (!draft) return;
-            setDraft({ content: draft.content.split(q).join(replacement) });
+            setDraft({ content: draft.content.split(q.trim()).join(replacement) });
             toast(`已替换本章 ${chapterMatches} 处`, "success");
           }}
         >

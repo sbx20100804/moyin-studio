@@ -46,11 +46,29 @@ const server = http.createServer((req, res) => {
     } catch (_) {}
 
     const system = payload.messages?.[0]?.content || "";
-    const wantsExtract = system.includes("设定整理");
-    const wantsOutline = !wantsExtract && system.includes("结构编辑");
-    const wantsSummary = !wantsExtract && !wantsOutline && system.includes("概括");
+    const wantsTitle = system.includes("标题候选") || system.includes("拟一个标题") || system.includes("章节标题");
+    const wantsVolume = system.includes("卷名候选") || system.includes("卷名");
+    const wantsExtract = !wantsTitle && !wantsVolume && system.includes("设定整理");
+    const wantsOutline = !wantsTitle && !wantsVolume && !wantsExtract && system.includes("结构编辑");
+    const wantsSummary = !wantsTitle && !wantsExtract && !wantsOutline && system.includes("概括");
 
     if (!payload.stream) {
+      if (wantsVolume) {
+        return json(res, 200, {
+          choices: [
+            { message: { role: "assistant", content: "第一卷 河灯\n第一卷 换座之后\n第一卷 汽水与笔记" } },
+          ],
+          usage: { prompt_tokens: 500, completion_tokens: 18 },
+        });
+      }
+      if (wantsTitle) {
+        return json(res, 200, {
+          choices: [
+            { message: { role: "assistant", content: "第一章 换座\n第一章 最后一瓶汽水\n第一章 笔记末页的赌约" } },
+          ],
+          usage: { prompt_tokens: 600, completion_tokens: 12 },
+        });
+      }
       if (wantsExtract) {
         return json(res, 200, {
           choices: [
@@ -60,10 +78,27 @@ const server = http.createServer((req, res) => {
                 content: JSON.stringify([
                   {
                     kind: "character",
+                    name: "沈砚",
+                    aliases: "沈先生",
+                    role: "主角",
+                    description: "前巡捕房探长，右肩有旧伤，雨天发作；说话极省，习惯用问句代替判断。",
+                    speechStyle: "话少，常用反问；紧张时重复对方最后两个字。",
+                    speechLength: "short",
+                    speechWords: "嗯、走吧、随你",
+                    speechTaboo: "亲爱的、太好了",
+                    source: "沈砚，二十八岁，前巡捕房探长，右肩有旧伤",
+                  },
+                  {
+                    kind: "character",
                     name: "更夫",
                     aliases: "老更",
                     role: "线索人物",
                     description: "十年前失踪，字迹出现在无落款的信上。",
+                    speechStyle: "说话绕，爱用旧称。",
+                    speechLength: "medium",
+                    speechWords: "后生、那年间",
+                    speechTaboo: "",
+                    source: "信上的字迹指向十年前失踪的更夫。",
                   },
                   {
                     kind: "item",
@@ -71,6 +106,11 @@ const server = http.createServer((req, res) => {
                     aliases: "",
                     role: "关键物件",
                     description: "卡在渡口石缝里，边缘有新磨痕。",
+                    speechStyle: "",
+                    speechLength: "medium",
+                    speechWords: "",
+                    speechTaboo: "",
+                    source: "石缝里卡着一枚缺角铜扣，边缘还是新的。",
                   },
                   {
                     kind: "concept",
@@ -78,12 +118,17 @@ const server = http.createServer((req, res) => {
                     aliases: "",
                     role: "意象",
                     description: "常年不灭，十年前那件事后无人再点。",
+                    speechStyle: "",
+                    speechLength: "medium",
+                    speechWords: "",
+                    speechTaboo: "",
+                    source: "石阶尽头，那盏常年不灭的渡灯今晚是暗的。",
                   },
                 ]),
               },
             },
           ],
-          usage: { prompt_tokens: 1200, completion_tokens: 160 },
+          usage: { prompt_tokens: 1200, completion_tokens: 260 },
         });
       }
       if (wantsOutline) {

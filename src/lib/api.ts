@@ -11,6 +11,7 @@ import type {
   Retrieved,
   SaveResult,
   SearchHit,
+  SettingsCandidate,
   Snapshot,
   SnapshotMeta,
   Thread,
@@ -141,6 +142,14 @@ export const api = {
   generateOutline: (chapterId: number, profileId: number) =>
     invoke<string>("generate_outline", { chapterId, profileId }),
 
+  generateTitle: (chapterId: number, profileId: number) =>
+    invoke<string[]>("generate_title", { chapterId, profileId }),
+
+  generateVolumeName: (chapterId: number, profileId: number) =>
+    invoke<string[]>("generate_volume_name", { chapterId, profileId }),
+
   extractEntities: (chapterId: number, profileId: number) =>
     invoke<Entity[]>("extract_entities", { chapterId, profileId }),
+  extractSettings: (text: string, projectId: number, profileId: number) =>
+    invoke<SettingsCandidate[]>("extract_settings", { text, projectId, profileId }),
 };

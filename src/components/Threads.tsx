@@ -29,6 +29,7 @@ export default function Threads() {
   const chapters = useStore((s) => s.chapters);
   const saveThread = useStore((s) => s.saveThread);
   const removeThread = useStore((s) => s.removeThread);
+  const activeChapterId = useStore((s) => s.activeChapterId);
   const [editing, setEditing] = useState<Thread | null>(null);
   const [confirm, setConfirm] = useState<Thread | null>(null);
 
@@ -136,7 +137,12 @@ export default function Threads() {
                             size="xs"
                             variant="ghost"
                             onClick={() =>
-                              void saveThread({ ...t, status: "paid", payoffChapterId: null })
+                              void saveThread({
+                                ...t,
+                                status: "paid",
+                                // 保留原有的回收章节；没有就记到当前章，别把记录抹掉
+                                payoffChapterId: t.payoffChapterId ?? activeChapterId ?? null,
+                              })
                             }
                           >
                             <Check size={10} /> 已回收

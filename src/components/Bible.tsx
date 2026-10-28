@@ -14,6 +14,7 @@ import { useMemo, useState } from "react";
 import { KIND_LABEL, useStore } from "@/lib/store";
 import type { Entity, EntityKind } from "@/lib/types";
 import { cx } from "@/lib/format";
+import ImportSettings from "./ImportSettings";
 import { Button, Chip, Field, Modal, Select, TextArea, TextInput } from "./ui";
 
 const KIND_ICON: Record<EntityKind, typeof Users> = {
@@ -50,14 +51,13 @@ const emptyEntity = (projectId: number, kind: EntityKind): Entity => ({
 export default function Bible() {
   const entities = useStore((s) => s.entities);
   const projectId = useStore((s) => s.activeProjectId);
-  const activeChapterId = useStore((s) => s.activeChapterId);
+  const draft = useStore((s) => s.draft);
   const saveEntity = useStore((s) => s.saveEntity);
   const removeEntity = useStore((s) => s.removeEntity);
-  const extractEntities = useStore((s) => s.extractEntities);
   const [filter, setFilter] = useState<"all" | EntityKind>("all");
   const [editing, setEditing] = useState<Entity | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const [extracting, setExtracting] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
 
   const shown = useMemo(
     () => (filter === "all" ? entities : entities.filter((e) => e.kind === filter)),
@@ -79,18 +79,8 @@ export default function Bible() {
         <span className="text-mute/50">/</span>
         <span className="text-[10.5px] text-mute">{entities.length} 条设定</span>
         <div className="flex-1" />
-        <Button
-          size="xs"
-          variant="ghost"
-          disabled={activeChapterId == null || extracting}
-          onClick={async () => {
-            if (activeChapterId == null) return;
-            setExtracting(true);
-            await extractEntities(activeChapterId);
-            setExtracting(false);
-          }}
-        >
-          <Sparkles size={11} /> {extracting ? "抽取中…" : "从本章抽取"}
+        <Button size="xs" variant="ghost" onClick={() => setImportOpen(true)}>
+          <Sparkles size={11} /> AI 识别
         </Button>
         <Button
           size="xs"
@@ -179,6 +169,12 @@ export default function Bible() {
           </div>
         </div>
       </div>
+
+      <ImportSettings
+        open={importOpen}
+        onClose={() => setImportOpen(false)}
+        chapterText={draft?.content ?? ""}
+      />
 
       <Modal
         open={editing !== null}

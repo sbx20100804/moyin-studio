@@ -7,6 +7,7 @@ import CommandPalette from "@/components/CommandPalette";
 import Bible from "@/components/Bible";
 import Editor from "@/components/Editor";
 import Outline from "@/components/Outline";
+import Onboarding from "@/components/Onboarding";
 import ProjectHome from "@/components/ProjectHome";
 import ProjectModal from "@/components/ProjectModal";
 import SearchModal from "@/components/SearchModal";
@@ -16,7 +17,6 @@ import StatsModal from "@/components/StatsModal";
 import Threads from "@/components/Threads";
 import TitleBar from "@/components/TitleBar";
 import Toasts from "@/components/Toasts";
-import { api } from "@/lib/api";
 import { useStore } from "@/lib/store";
 
 function Splash() {
@@ -49,6 +49,8 @@ export default function App() {
   const view = useStore((s) => s.view);
   const activeProjectId = useStore((s) => s.activeProjectId);
   const activeChapterId = useStore((s) => s.activeChapterId);
+  const onboardingOpen = useStore((s) => s.onboardingOpen);
+  const settingsOpen = useStore((s) => s.settingsOpen);
 
   useEffect(() => {
     void useStore.getState().bootstrap();
@@ -217,11 +219,9 @@ export default function App() {
     let unlisten: (() => void) | undefined;
     getCurrentWindow()
       .onCloseRequested(async (event) => {
-        if (disposed) return;
+        // 永远先拦下默认关闭：由 store 统一「保存 → 失败则留在应用 → 成功再 destroy」。
         event.preventDefault();
-        disposed = true;
-        await useStore.getState().saveNow();
-        void api.close();
+        await useStore.getState().requestClose();
       })
       .then((fn) => {
         if (disposed) fn();
@@ -297,6 +297,7 @@ export default function App() {
       <CommandPalette />
       <SearchModal />
       <StatsModal />
+      {onboardingOpen ? <Onboarding /> : null}
       <Toasts />
     </div>
   );

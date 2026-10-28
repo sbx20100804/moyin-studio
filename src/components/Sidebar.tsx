@@ -334,6 +334,7 @@ export default function Sidebar() {
   const pickProfile = useStore((s) => s.pickProfile);
   const setSettingsOpen = useStore((s) => s.setSettingsOpen);
   const [pendingDelete, setPendingDelete] = useState<{ id: number; title: string } | null>(null);
+  const [purgeTarget, setPurgeTarget] = useState<{ id: number; title: string } | null>(null);
   const [profileOpen, setProfileOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [trashOpen, setTrashOpen] = useState(false);
@@ -814,7 +815,7 @@ export default function Sidebar() {
                 <Button
                   size="xs"
                   variant="danger"
-                  onClick={() => void purgeDeleted(c.id)}
+                  onClick={() => setPurgeTarget({ id: c.id, title: c.title })}
                 >
                   彻底删除
                 </Button>
@@ -822,6 +823,36 @@ export default function Sidebar() {
             ))}
           </div>
         )}
+      </Modal>
+
+      <Modal
+        open={purgeTarget !== null}
+        onClose={() => setPurgeTarget(null)}
+        title="彻底删除"
+        subtitle="这一步不可撤销，章节正文会从数据库里删掉"
+        width="420px"
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setPurgeTarget(null)}>
+              取消
+            </Button>
+            <Button
+              variant="danger"
+              onClick={() => {
+                if (purgeTarget) void purgeDeleted(purgeTarget.id);
+                setPurgeTarget(null);
+              }}
+            >
+              确认彻底删除
+            </Button>
+          </>
+        }
+      >
+        <p className="text-[13px] leading-relaxed text-dim">
+          确定要永久删除
+          <span className="mx-1 font-serif text-ink">「{purgeTarget?.title}」</span>
+          吗？删除后无法恢复。
+        </p>
       </Modal>
     </aside>
   );

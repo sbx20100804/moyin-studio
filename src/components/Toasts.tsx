@@ -20,7 +20,7 @@ export default function Toasts() {
         {toasts.map((t) => {
           const Icon = ICONS[t.kind];
           return (
-            <motion.button
+            <motion.div
               key={t.id}
               layout
               initial={{ opacity: 0, y: 14, scale: 0.96 }}
@@ -29,7 +29,7 @@ export default function Toasts() {
               transition={{ type: "spring", stiffness: 520, damping: 34 }}
               onClick={() => dismiss(t.id)}
               className={cx(
-                "pointer-events-auto flex max-w-[520px] items-center gap-2 rounded-full border px-4 py-2 text-[11.5px] shadow-[0_18px_40px_-20px_rgba(0,0,0,0.8)] backdrop-blur-xl",
+                "pointer-events-auto flex max-w-[520px] cursor-pointer items-center gap-2 rounded-full border px-4 py-2 text-[11.5px] shadow-[0_18px_40px_-20px_rgba(0,0,0,0.8)] backdrop-blur-xl",
                 t.kind === "error"
                   ? "border-cinnabar/35 bg-cinnabar/12 text-cinnabar"
                   : t.kind === "success"
@@ -44,7 +44,19 @@ export default function Toasts() {
                 )}
               />
               <span className="truncate">{t.message}</span>
-            </motion.button>
+              {t.action ? (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void t.action!.run();
+                    dismiss(t.id);
+                  }}
+                  className="ml-1 shrink-0 rounded-full border border-gold/40 px-2 py-0.5 text-[10.5px] text-gold transition-colors hover:bg-gold/10"
+                >
+                  {t.action.label}
+                </button>
+              ) : null}
+            </motion.div>
           );
         })}
       </AnimatePresence>

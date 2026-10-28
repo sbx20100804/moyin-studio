@@ -12,6 +12,7 @@ import {
   Plus,
   RefreshCw,
   Server,
+  Sparkles,
   Sun,
   Trash2,
   Wifi,
@@ -473,7 +474,7 @@ export default function Settings() {
                     <span>发散</span>
                   </div>
                 </div>
-                <Field label="单次最大输出 tokens" hint="约 1 token ≈ 1.6 个汉字">
+                <Field label="单次最大输出 tokens" hint="约 1 token ≈ 1.4 个汉字">
                   <TextInput
                     type="number"
                     value={form.maxTokens}
@@ -651,6 +652,12 @@ export default function Settings() {
                   className="font-mono text-[11px] leading-[1.8]"
                   placeholder="留空则使用默认模板"
                 />
+                {/发给\s*AI|使用方法|设定包/.test(templateDraft) ? (
+                  <p className="mt-1.5 rounded-lg border border-cinnabar/20 bg-cinnabar/8 px-2.5 py-1.5 text-[10px] leading-relaxed text-cinnabar/90">
+                    这段更像「写给作者的使用步骤」。模型会照它来问你补充资料，而不是直接写正文。
+                    系统提示词只保留写作规则与设定；步骤说明请删掉，或放进章纲。
+                  </p>
+                ) : null}
               </div>
               <div className="flex items-center gap-2">
                 <Button
@@ -756,6 +763,18 @@ export default function Settings() {
                 </div>
                 %APPDATA%\com.moyin.novelstudio\moyin.db
                 <div className="mt-2">导出格式：DOCX / Markdown / TXT（自动加章节标题与排版）</div>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setOpen(false);
+                    useStore.getState().setOnboardingOpen(true);
+                  }}
+                >
+                  <Sparkles size={11} /> 重新观看新手引导
+                </Button>
               </div>
             </div>
           ) : null}

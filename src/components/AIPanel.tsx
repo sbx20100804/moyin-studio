@@ -20,7 +20,7 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import { buildMessages } from "@/lib/ai";
 import { analyzeHuman } from "@/lib/humanize";
-import { cx, estimateTokens } from "@/lib/format";
+import { cx, estimateTokens, looksLikeMeta } from "@/lib/format";
 import { useStore } from "@/lib/store";
 import type { GenKind } from "@/lib/types";
 import DiffView from "./DiffView";
@@ -192,6 +192,7 @@ export default function AIPanel() {
   }, [gen?.id]);
 
   const streaming = gen?.status === "streaming";
+  const metaReply = Boolean(gen && !streaming && looksLikeMeta(gen.text));
   const hasSelection = Boolean(selection?.text.trim());
   const meta = gen ? KIND_META[gen.kind] : null;
   const multi = useStore((s) => s.multi);
@@ -419,6 +420,12 @@ export default function AIPanel() {
                   </span>
                 ) : null}
               </div>
+              {metaReply ? (
+                <div className="border-b border-cinnabar/25 bg-cinnabar/8 px-3 py-2 text-[10px] leading-relaxed text-cinnabar/90">
+                  这版像说明文字，不是正文。多半是本章还没有开头，或系统提示词里带了「发给 AI」的使用说明。
+                  补一句场景，或把设定放进设定卡后再试。
+                </div>
+              ) : null}
               {human && !streaming && human.notes.length > 0 ? (
                 <div className="border-b border-line/40 bg-surface2/30 px-3 py-1.5 text-[10px] leading-relaxed text-mute">
                   {human.notes[0]}

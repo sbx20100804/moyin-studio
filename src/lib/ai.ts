@@ -31,7 +31,8 @@ export const DEFAULT_SYSTEM_TEMPLATE = `你在写长篇小说《{{title}}》，�
 2. 若资料之间有冲突，以【人物与设定】和【本章章纲】为准。
 3. 只输出小说正文：不要标题、序号、markdown、括号说明，不要“好的”“以下是”，也不要复述要求。
 4. 与上文自然衔接，不重复已有段落，不复述前情，不写“未完待续”。
-5. 对白使用中文引号“”，段落之间空一行。`;
+5. 对白使用中文引号“”，段落之间空一行。
+6. 不要询问、不要确认、不要解释，不要输出“收到”“好的”“以下是”“如果你想……”这类话；资料不足就按已有设定直接写，不要停下来要作者补充。`;
 
 export type VoiceId = "light" | "web" | "literary" | "custom";
 
@@ -55,17 +56,23 @@ export const VOICE_PRESETS: Record<VoiceId, VoicePreset> = {
     hint: "对话推进、心理吐槽、短句单句成段",
     style: "轻快、口语化，贴近视角人物，带一点自嘲和吐槽。",
     rules: `【文风执行细则 · 轻小说】
-读起来要像人写的连载，不像范文。
-1. 视角贴人：只写视角人物看得见、听得见、想得到的东西，不写“他不知道的是”。
-2. 对话优先：对话与动作占七成以上，叙述只做转场；每段对话之间夹动作或神态。
-3. 句子短：多用短句、断句、单句成段，允许不完整句；一段不超过四行。
-4. 心理吐槽：允许短促的内心独白、自嘲、吐槽，用「」标示；不要长篇心理分析。
-5. 具体化：写具体动作、物件、声音、气味、身体反应；不写“心中五味杂陈”这类总结。
-6. 人物口癖：每个角色有固定用词和语气，遮住名字也能认出是谁在说话。
-7. 节奏：每 800-1200 字安排一个小转折或新信息；章末停在悬念、误会或反转上。
-8. 允许：拟声词、破折号、省略号、括号吐槽、口语和轻微网络语。
-9. 禁止：排比升华、哲理总结、每段工整对仗、“空气仿佛凝固”“嘴角勾起一抹”“眼神深邃”、路人 NPC 式惊叹。
-10. 禁止 AI 套语：仿佛、似乎、一丝、不禁、微微、缓缓、不由得、莫名的、难以言喻、心中一暖。`,
+写成像日轻中译的连载：短、快、有吐槽，不是作文。
+1. 视点：第一人称或第三人称限知。叙述者有自己的语气，会吐槽、会自嘲；只写视角人物知道的事，不写“他不知道的是”。
+2. 对话：对话与动作占七成以上。每句对话独立成段，前后夹一个动作、表情或视线；允许打断、抢话、答非所问；不要每句都用“说道/问道”标注，用动作和语气代替。
+3. 人物区分：每个角色有固定称呼、口癖和句长；遮住名字也能认出谁在说话。
+4. 独白：短，单独成段或用（）标出；写吐槽和犹豫，不写长篇心理分析。
+5. 段落：一段不超过三行，允许单句成段；拟声词、短感叹单独成段。
+6. 场景：教室、走廊、天台、社团活动室、便利店、车站；写具体动作与距离感（并肩走、递东西、视线躲开）。
+7. 情绪：用动作、独白和对话承载；不写“心中五味杂陈”这类总结。
+8. 节奏：每 800-1200 字一个小转折或笑点；章末停在反转、误会或一句吐槽上。
+9. 禁止：文学腔长句、成段环境描写、解释性旁白、每段工整对仗、NPC 式惊叹、排比升华、“空气仿佛凝固”“嘴角勾起一抹”“眼神深邃”。
+10. 禁止套语：仿佛、似乎、一丝、不禁、微微、缓缓、不由得、莫名的、难以言喻。
+11. 语感示例（只学节奏，不要照搬内容）：
+“你迟到了三分钟。”
+她头也不抬，把面包往我桌上一放。
+（……这算什么，施舍吗？）
+“路上有只猫挡道。”
+“编。”`,
   },
   web: {
     id: "web",
@@ -102,6 +109,16 @@ export const VOICE_PRESETS: Record<VoiceId, VoicePreset> = {
 };
 
 export const DEFAULT_STYLE = "自然流畅，像人写的，避免套语。";
+
+/** Always appended, even with a custom template, so the model never chats back. */
+export const OUTPUT_DISCIPLINE = `【输出纪律】
+只输出小说正文。不要询问、不要确认、不要解释，不要输出“收到”“好的”“以下是”“如果你想……”之类的话；资料不足就按已有设定直接写，不要停下来要作者补充。`;
+
+/** Extra craft notes for specific genres (appended to the system prompt). */
+export const GENRE_HINTS: Record<string, string> = {
+  "日本校园轻小说": `【题材补充 · 日本校园轻小说】
+场景以学校与放学后为主：教室、走廊、天台、社团活动室、便利店、车站。日常里埋小事件，靠对话和吐槽推进；青春感来自具体动作与距离感（并肩走、递东西、视线躲开），不要写成职场或黑暗奇幻。文化祭、体育祭、夏日祭、换座位、值日都可以当节点。`,
+};
 
 export function renderTemplate(
   template: string,
@@ -165,12 +182,26 @@ function continueTask(length: number, voice: VoiceId) {
       : voice === "web"
         ? "- 直接推进冲突或目标，不要回顾；动作多于心理。"
         : "- 接住最后一句的语气，不要急着解释。";
-  return `【任务】从标记处直接续写，约 ${length} 字。
+  return `【任务】从【续写从这里开始 ↓】标记之后直接续写，约 ${length} 字。
 - 承接最后一句的语感、节奏与视角，不跳场、不总结。
 - 这一段要有自己的小起伏：一个动作、一次试探、或一个没被说出口的念头。
 ${extra}
 - 结尾停在钩子上，不要收束整章。
-不要重复上文最后一段。直接从下一句开始。`;
+不要重复上文最后一段。直接输出正文，不要询问、不要确认、不要解释。`;
+}
+
+function startTask(length: number, voice: VoiceId) {
+  const opening =
+    voice === "light"
+      ? "先用一句对白或一个具体动作开场，不要环境铺陈；允许单句成段。"
+      : voice === "web"
+        ? "第一段就进入冲突或目标，不要铺垫。"
+        : "从一个具体的动作或物件开始，不要先讲背景。";
+  return `【任务】本章还没有正文。从第一段开始写，约 ${length} 字。
+- ${opening}
+- 用【人物与设定】【本章章纲】里已有的信息推进；名字、称谓按给定内容，不要自行改名。
+- 如果资料不足以交代某件事，就用最自然的写法带过，不要停下来提问。
+- 只输出正文，不要“收到”“好的”“以下是”，不要解释或询问作者。`;
 }
 
 function rewriteTask(instruction: string) {
@@ -210,7 +241,7 @@ export function buildMessages(opts: {
   const contextWindow = Math.max(2048, opts.contextWindow || 32768);
   const reserve = Math.min(4096, opts.maxTokens || 2400) + 900;
   const capTokens = Math.floor(contextWindow * 0.92);
-  const capChars = Math.floor(capTokens * 1.6);
+  const capChars = Math.floor(capTokens * 1.35);
 
   const voiceId: VoiceId =
     project.voice && project.voice in VOICE_PRESETS ? project.voice : "light";
@@ -223,7 +254,12 @@ export function buildMessages(opts: {
     pov: project.pov || "第三人称",
     style,
   });
-  const system = voice.rules ? `${base}\n\n${voice.rules}` : base;
+  const hint = project.genre?.includes("轻小说")
+    ? GENRE_HINTS["日本校园轻小说"] ?? ""
+    : "";
+  const system = [base, voice.rules, hint, OUTPUT_DISCIPLINE]
+    .filter(Boolean)
+    .join("\n\n");
 
   const sceneText = `${tail(content, 3000)}\n${chapter.outline}\n${selection?.text ?? ""}`;
   const scored = [...entities]
@@ -243,7 +279,8 @@ export function buildMessages(opts: {
     );
   const voiced = scored.filter((x) => x.e.kind === "character" && hasVoice(x.e));
   const appearing = voiced.filter((x) => x.score > 0).map((x) => x.e);
-  const voiceCharacters = appearing.length ? appearing : voiced.slice(0, 4).map((x) => x.e);
+  // 只给真正在场景里出现的人物注入语气；没人出场就不要硬塞别人的腔调。
+  const voiceCharacters = appearing;
 
   const index = Math.max(0, chapters.findIndex((c) => c.id === chapter.id));
   const prevChapters = chapters.slice(0, index);
@@ -264,7 +301,7 @@ export function buildMessages(opts: {
     const parts: string[] = [];
 
     if (project.synopsis.trim()) {
-      parts.push(`【故事梗概】\n${project.synopsis.trim()}`);
+      parts.push(`【故事梗概】\n${project.synopsis.trim().slice(0, 600)}`);
     }
 
     const shown = ranked.slice(0, budgets.entN);
@@ -290,12 +327,12 @@ export function buildMessages(opts: {
 
     const voiceLines = voiceCharacters.slice(0, 6).map((e) => {
       const bits: string[] = [];
-      if (e.speechStyle.trim()) bits.push(`语气：${e.speechStyle.trim()}`);
+      if (e.speechStyle.trim()) bits.push(`语气：${e.speechStyle.trim().slice(0, 60)}`);
       if (e.speechLength && e.speechLength !== "medium") {
         bits.push(`句长：${e.speechLength === "short" ? "短" : "长"}`);
       }
-      if (e.speechWords.trim()) bits.push(`常用：${e.speechWords.trim()}`);
-      if (e.speechTaboo.trim()) bits.push(`忌用：${e.speechTaboo.trim()}`);
+      if (e.speechWords.trim()) bits.push(`常用：${e.speechWords.trim().slice(0, 40)}`);
+      if (e.speechTaboo.trim()) bits.push(`忌用：${e.speechTaboo.trim().slice(0, 40)}`);
       if (!bits.length) return "";
       return `· ${e.name}｜${bits.join("｜")}`;
     }).filter(Boolean);
@@ -338,7 +375,7 @@ export function buildMessages(opts: {
     const sample = project.styleSample?.trim() ?? "";
     if (sample && (kind === "continue" || kind === "custom")) {
       parts.push(
-        `【语感样本（只学语气、节奏与用词习惯，不要照抄内容、人名或情节）】\n${sample.slice(0, 900)}`
+        `【语感样本（只学语气、节奏与用词习惯，不要照抄内容、人名或情节）】\n${sample.slice(0, 500)}`
       );
     }
 
@@ -373,13 +410,21 @@ export function buildMessages(opts: {
       const context = tail(content.slice(0, cursor), budgets.tailB);
       tailChars = context.length;
       if (context.trim()) {
-        parts.push(`【本章已写内容（节选，结尾即为续写起点）】\n${context}`);
+        parts.push(
+          `【本章已写内容（节选，结尾即为续写起点）】\n${context}\n\n【续写从这里开始 ↓】`
+        );
+        const ask =
+          kind === "custom"
+            ? instruction || continueTask(targetLength, voiceId)
+            : continueTask(targetLength, voiceId);
+        parts.push(ask);
+      } else if (kind === "custom" && instruction) {
+        parts.push(
+          `${instruction}\n\n【输出要求】只输出正文，不要询问、不要确认、不要解释。`
+        );
+      } else {
+        parts.push(startTask(targetLength, voiceId));
       }
-      const ask =
-        kind === "custom"
-          ? instruction || continueTask(targetLength, voiceId)
-          : continueTask(targetLength, voiceId);
-      parts.push(ask);
     }
 
     const user = parts.join("\n\n");
@@ -391,10 +436,11 @@ export function buildMessages(opts: {
       tailChars,
       retrievedCount: rag.length,
       outlineChars: outline.length,
+      voiceCount: voiceLines.length,
     };
   };
 
-  const available = Math.max(1200, Math.floor((contextWindow - reserve) * 1.6));
+  const available = Math.max(1200, Math.floor((contextWindow - reserve) * 1.35));
   let budgets = {
     tailB: Math.min(16000, Math.max(1200, Math.floor(available * 0.52))),
     sumB: Math.min(3000, Math.max(400, Math.floor(available * 0.16))),
@@ -417,14 +463,28 @@ export function buildMessages(opts: {
     built = assemble(budgets);
   }
 
+  let user = built.user;
+  // 兜底：系统提示、梗概、章纲、语感样本这些固定块本身也可能超预算。
+  // 真超了就从前往后丢，保住最近的正文和任务指令。
+  if (built.chars > capChars && user.length > 400) {
+    const keep = Math.max(500, capChars - system.length);
+    if (user.length > keep) {
+      const cut = user.length - keep;
+      const boundary = user.indexOf("\n\n【", cut);
+      const start = boundary !== -1 && boundary - cut < 600 ? boundary + 2 : cut;
+      user = "（前文设定过长，已省略）\n\n" + user.slice(start);
+      trimmed = true;
+    }
+  }
+
   return {
     messages: [
       { role: "system", content: system },
-      { role: "user", content: built.user },
+      { role: "user", content: user },
     ],
     meta: {
-      chars: built.chars,
-      tokens: estimateTokens(system + built.user),
+      chars: system.length + user.length,
+      tokens: estimateTokens(system + user),
       entityCount: built.entityCount,
       hasPrev: built.summaryCount > 0,
       summaryCount: built.summaryCount,
@@ -434,7 +494,7 @@ export function buildMessages(opts: {
       tailBudget: budgets.tailB,
       retrievedCount: built.retrievedCount,
       foreshadowCount: opts.foreshadows?.length ?? 0,
-      voiceCount: Math.min(voiceCharacters.length, 6),
+      voiceCount: built.voiceCount,
       trimmed,
     },
   };

@@ -57,6 +57,20 @@ export interface Entity {
   updatedAt: string;
 }
 
+export interface SettingsCandidate {
+  kind: EntityKind;
+  name: string;
+  aliases: string;
+  role: string;
+  description: string;
+  speechStyle: string;
+  speechLength: "short" | "medium" | "long";
+  speechWords: string;
+  speechTaboo: string;
+  /** 原文里支撑这条设定的一句话 */
+  source: string;
+}
+
 export interface Profile {
   id: number;
   name: string;

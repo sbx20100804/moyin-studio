@@ -73,6 +73,31 @@ pub struct Entity {
     pub updated_at: String,
 }
 
+/// AI 从一段文本里识别出的设定候选，先给用户预览，确认后才落库。
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingsCandidate {
+    pub kind: String,
+    pub name: String,
+    #[serde(default)]
+    pub aliases: String,
+    #[serde(default)]
+    pub role: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub speech_style: String,
+    #[serde(default)]
+    pub speech_length: String,
+    #[serde(default)]
+    pub speech_words: String,
+    #[serde(default)]
+    pub speech_taboo: String,
+    /// 原文里支撑这条设定的一句话，方便用户判断真假
+    #[serde(default)]
+    pub source: String,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct Profile {

@@ -167,10 +167,7 @@ export default function TitleBar() {
           {maxed ? <Copy size={12} /> : <Square size={11} />}
         </button>
         <button
-          onClick={async () => {
-            await useStore.getState().saveNow();
-            void api.close();
-          }}
+          onClick={() => void useStore.getState().requestClose()}
           className="flex w-[46px] items-center justify-center text-dim transition-colors hover:bg-cinnabar hover:text-white"
           title="关闭"
         >
