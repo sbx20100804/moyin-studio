@@ -473,6 +473,7 @@ pub fn run() {
             ai::generate_volume_name,
             ai::extract_entities,
             ai::extract_settings,
+            ai::judge_candidates,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  CandidateJudgement,
   Chapter,
   ChapterMeta,
   ChatMessage,
@@ -152,4 +153,6 @@ export const api = {
     invoke<Entity[]>("extract_entities", { chapterId, profileId }),
   extractSettings: (text: string, projectId: number, profileId: number) =>
     invoke<SettingsCandidate[]>("extract_settings", { text, projectId, profileId }),
+  judgeCandidates: (items: string[], context: string, profileId: number) =>
+    invoke<CandidateJudgement>("judge_candidates", { items, context, profileId }),
 };

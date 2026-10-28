@@ -46,13 +46,31 @@ const server = http.createServer((req, res) => {
     } catch (_) {}
 
     const system = payload.messages?.[0]?.content || "";
-    const wantsTitle = system.includes("标题候选") || system.includes("拟一个标题") || system.includes("章节标题");
+    const wantsJudge = system.includes("你是小说编辑");
+    const wantsTitle = !wantsJudge && (system.includes("标题候选") || system.includes("拟一个标题") || system.includes("章节标题"));
     const wantsVolume = system.includes("卷名候选") || system.includes("卷名");
     const wantsExtract = !wantsTitle && !wantsVolume && system.includes("设定整理");
     const wantsOutline = !wantsTitle && !wantsVolume && !wantsExtract && system.includes("结构编辑");
     const wantsSummary = !wantsTitle && !wantsExtract && !wantsOutline && system.includes("概括");
 
     if (!payload.stream) {
+      if (wantsJudge) {
+        return json(res, 200, {
+          choices: [
+            {
+              message: {
+                role: "assistant",
+                content: JSON.stringify({
+                  best: 2,
+                  scores: [68, 88, 74],
+                  reason: "第二版有具体动作和关系移动，结尾钩子落在事实上",
+                }),
+              },
+            },
+          ],
+          usage: { prompt_tokens: 1800, completion_tokens: 40 },
+        });
+      }
       if (wantsVolume) {
         return json(res, 200, {
           choices: [

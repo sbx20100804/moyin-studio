@@ -117,6 +117,7 @@ export default function App() {
           }
           return {};
         });
+        void useStore.getState().maybeJudgeCandidates();
       })
     );
 
@@ -137,6 +138,7 @@ export default function App() {
           }
           return {};
         });
+        void useStore.getState().maybeJudgeCandidates();
       })
     );
 

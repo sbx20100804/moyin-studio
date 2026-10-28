@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { api } from "./api";
 import { buildMessages, QUICK_ACTIONS } from "./ai";
 import { chineseNumber, cleanGenerated } from "./format";
+import { analyzeHuman } from "./humanize";
 import type {
   Candidate,
   ChapterMeta,
@@ -32,6 +33,14 @@ export interface MultiGen {
   anchor?: number;
   instruction: string;
   profileName: string;
+  /** 正在让模型评估哪一版最好 */
+  judging?: boolean;
+  /** 推荐版本下标 */
+  recommended?: number;
+  /** 评估理由 */
+  reason?: string;
+  /** 每版得分，和 items 对齐 */
+  scores?: number[];
 }
 
 export interface Toast {
@@ -158,6 +167,8 @@ interface Store {
   ) => Promise<void>;
   acceptCandidate: (index: number) => Promise<void>;
   cancelMulti: () => void;
+  /** 三版都写完后，让模型自动评估哪一版最值得采用 */
+  maybeJudgeCandidates: () => Promise<void>;
   restoreSnapshot: (id: number) => Promise<void>;
   summarizeNow: (chapterId: number) => Promise<string | null>;
   maybeAutoSummarize: (chapterId: number) => Promise<void>;
@@ -975,6 +986,78 @@ export const useStore = create<Store>((set, get) => ({
       if (it.status === "streaming") void api.cancelGeneration(it.id);
     });
     set({ multi: null });
+  },
+
+  async maybeJudgeCandidates() {
+    const s = get();
+    const multi = s.multi;
+    if (!multi || multi.judging || multi.recommended != null) return;
+    if (multi.items.some((it) => it.status === "streaming")) return;
+    const done = multi.items.filter((it) => it.status === "done" && it.text.trim());
+    if (done.length < 2) return;
+    const profile =
+      s.profiles.find((p) => p.id === s.activeProfileId) ??
+      s.profiles.find((p) => p.isDefault) ??
+      s.profiles[0];
+    if (!profile?.hasKey) return;
+
+    set({ multi: { ...multi, judging: true } });
+    const runId = multi.items[0]?.id;
+    const stillSame = (cur: { multi: MultiGen | null }) =>
+      Boolean(cur.multi && cur.multi.items[0]?.id === runId);
+    const chapter = s.chapters.find((c) => c.id === s.activeChapterId);
+    const context = [chapter?.title, chapter?.outline, s.draft?.content.slice(-700)]
+      .filter(Boolean)
+      .join("\n");
+
+    try {
+      const res = await api.judgeCandidates(
+        done.map((it) => it.text),
+        context,
+        profile.id
+      );
+      const winner = done[Math.max(0, Math.min(done.length - 1, res.best - 1))];
+      const recommended = multi.items.findIndex((it) => it.id === winner.id);
+      const scores = multi.items.map((it) => {
+        const k = done.indexOf(it);
+        return k >= 0 ? res.scores[k] ?? 0 : 0;
+      });
+      set((cur) =>
+        stillSame(cur)
+          ? {
+              multi: {
+                ...cur.multi!,
+                judging: false,
+                recommended,
+                reason: res.reason,
+                scores,
+              },
+            }
+          : {}
+      );
+    } catch {
+      // 评估失败不打扰作者：退回本地文风分，仍然标一个推荐版本。
+      const scores = multi.items.map((it) =>
+        it.status === "done" && it.text.trim() ? analyzeHuman(it.text).score : 0
+      );
+      let recommended = 0;
+      scores.forEach((v, i) => {
+        if (v > scores[recommended]) recommended = i;
+      });
+      set((cur) =>
+        stillSame(cur)
+          ? {
+              multi: {
+                ...cur.multi!,
+                judging: false,
+                recommended,
+                reason: "AI 评估失败，按本地文风分兜底",
+                scores,
+              },
+            }
+          : {}
+      );
+    }
   },
 
   discardAI() {

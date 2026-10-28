@@ -98,6 +98,19 @@ pub struct SettingsCandidate {
     pub source: String,
 }
 
+/// 多候选自动评估的结果。
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct CandidateJudgement {
+    /// 胜出版本号，从 1 开始
+    pub best: i64,
+    #[serde(default)]
+    pub reason: String,
+    /// 每版 0-100，顺序与传入的 items 一致
+    #[serde(default)]
+    pub scores: Vec<i64>,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct Profile {

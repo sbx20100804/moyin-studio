@@ -71,6 +71,15 @@ export interface SettingsCandidate {
   source: string;
 }
 
+/** 多候选自动评估结果 */
+export interface CandidateJudgement {
+  /** 胜出版本号，从 1 开始 */
+  best: number;
+  reason: string;
+  /** 每版 0-100，顺序与传入的候选一致 */
+  scores: number[];
+}
+
 export interface Profile {
   id: number;
   name: string;

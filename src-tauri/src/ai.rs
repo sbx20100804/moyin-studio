@@ -1,5 +1,5 @@
 use crate::db::{self, Db};
-use crate::models::{Entity, GenerateRequest, ProfileInput, SettingsCandidate};
+use crate::models::{CandidateJudgement, Entity, GenerateRequest, ProfileInput, SettingsCandidate};
 use futures_util::StreamExt;
 use serde_json::json;
 use std::collections::HashMap;
@@ -1057,4 +1057,114 @@ pub async fn extract_settings(
         return Err("没有识别出可用的设定，换一段文字再试".into());
     }
     Ok(out)
+}
+
+/// 让模型给多版候选打分，挑出最想让读者继续读的一版。只返回评分，不改正文。
+#[tauri::command]
+pub async fn judge_candidates(
+    db: State<'_, Db>,
+    items: Vec<String>,
+    context: String,
+    profile_id: i64,
+) -> Result<CandidateJudgement, String> {
+    if items.len() < 2 {
+        return Err("至少需要两版候选".into());
+    }
+    let (profile, key) = {
+        let conn = db.0.lock().map_err(|_| "数据库锁定失败".to_string())?;
+        let profile = db::get_profile(&conn, profile_id).map_err(|e| e.to_string())?;
+        let key = db::profile_key(&conn, profile_id)?;
+        (profile, key)
+    };
+    if key.is_empty() {
+        return Err("尚未配置 API Key".into());
+    }
+
+    let mut listing = String::new();
+    for (i, text) in items.iter().enumerate() {
+        let body: String = text.trim().chars().take(1500).collect();
+        listing.push_str(&format!("### 第{}版\n{}\n\n", i + 1, body));
+    }
+
+    let system = r#"你是小说编辑。下面是同一段上文写出的几个续写版本，请判断哪一版最让读者想继续读。
+按重要性排序的标准：
+1. 结束时有没有发生可复述的变化：决定、拒绝、发现、撒谎、关系移动；只有气氛和心理、什么都没发生的版本分数要低。
+2. 对白有没有潜台词，人物是否分得出谁在说话。
+3. 细节是否具体（物件、动作、距离），还是抽象总结。
+4. 结尾的钩子是否具体，还是“似乎”“隐约”这类空钩子。
+5. 有没有套语和解释性旁白。
+不要因为文笔华丽或字数多加分。
+只输出 JSON，不要 markdown、不要解释：{"best": 1, "scores": [80, 65, 72], "reason": "25 字以内说明"}"#;
+
+    let body = json!({
+        "model": profile.model,
+        "messages": [
+            { "role": "system", "content": system },
+            { "role": "user", "content": format!(
+                "【本章】\n{}\n\n【候选】\n{}",
+                context.chars().take(1500).collect::<String>(),
+                listing
+            ) }
+        ],
+        "temperature": 0.2,
+        "max_tokens": 320,
+        "stream": false
+    });
+
+    let resp = client()?
+        .post(chat_url(&profile.base_url))
+        .bearer_auth(&key)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("连接失败: {e}"))?;
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(format!("模型返回 {}：{}", status.as_u16(), truncate(&text, 300)));
+    }
+    let payload: serde_json::Value =
+        serde_json::from_str(&text).map_err(|_| "返回内容不是合法 JSON".to_string())?;
+    let raw = payload
+        .pointer("/choices/0/message/content")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let json_text = match (raw.find('{'), raw.rfind('}')) {
+        (Some(a), Some(b)) if b > a => &raw[a..=b],
+        _ => return Err("模型没有返回评分 JSON".into()),
+    };
+    let parsed: serde_json::Value =
+        serde_json::from_str(json_text).map_err(|e| format!("解析评分失败: {e}"))?;
+
+    let best = parsed
+        .get("best")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(1)
+        .clamp(1, items.len() as i64);
+    let reason: String = parsed
+        .get("reason")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .chars()
+        .take(60)
+        .collect();
+    let scores: Vec<i64> = parsed
+        .get("scores")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_i64())
+                .map(|n| n.clamp(0, 100))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Ok(CandidateJudgement {
+        best,
+        reason,
+        scores,
+    })
 }

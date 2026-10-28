@@ -320,6 +320,15 @@ export default function AIPanel() {
               <div className="flex items-center gap-2 border-b border-line/60 px-3 py-2">
                 <Layers size={11} className="text-gold/80" />
                 <span className="text-[10.5px] text-dim">多候选 · {multi.items.length} 版</span>
+                {multi.judging ? (
+                  <span className="flex items-center gap-1 text-[9.5px] text-gold/75">
+                    <span className="h-1 w-1 animate-pulse rounded-full bg-gold" /> 评估中
+                  </span>
+                ) : multi.recommended != null ? (
+                  <span className="rounded-full bg-gold/12 px-1.5 py-0.5 text-[9px] text-gold">
+                    推荐第 {multi.recommended + 1} 版
+                  </span>
+                ) : null}
                 <span className="flex-1" />
                 <button
                   onClick={cancelMulti}
@@ -332,10 +341,20 @@ export default function AIPanel() {
                 {multi.items.map((item, i) => (
                   <div
                     key={item.id}
-                    className="rounded-xl border border-line/60 bg-surface2/25 p-2.5"
+                    className={cx(
+                      "rounded-xl border p-2.5 transition-colors",
+                      i === multi.recommended
+                        ? "border-gold/50 bg-gold/6"
+                        : "border-line/60 bg-surface2/25"
+                    )}
                   >
                     <div className="mb-1.5 flex items-center gap-2">
                       <span className="text-[9.5px] text-mute">第 {i + 1} 版</span>
+                      {i === multi.recommended ? (
+                        <span className="rounded-full bg-gold/15 px-1.5 text-[9px] text-gold">
+                          推荐
+                        </span>
+                      ) : null}
                       {item.status === "streaming" ? (
                         <span className="flex items-center gap-1 text-[9.5px] text-gold/70">
                           <span className="h-1 w-1 animate-pulse rounded-full bg-gold" /> 写
@@ -345,6 +364,11 @@ export default function AIPanel() {
                       ) : (
                         <span className="text-[9.5px] text-gold/60">完成</span>
                       )}
+                      {multi.scores?.[i] ? (
+                        <span className="text-[9px] tabular-nums text-mute">
+                          {multi.scores[i]} 分
+                        </span>
+                      ) : null}
                       <span className="flex-1" />
                       <Button
                         size="xs"
@@ -355,6 +379,11 @@ export default function AIPanel() {
                         <Check size={10} /> 采用
                       </Button>
                     </div>
+                    {i === multi.recommended && multi.reason ? (
+                      <p className="mb-1.5 text-[9.5px] leading-relaxed text-gold/75">
+                        编辑视角：{multi.reason}
+                      </p>
+                    ) : null}
                     <p className="scroll-thin max-h-[130px] overflow-y-auto whitespace-pre-wrap font-serif text-[11.5px] leading-[1.9] text-ink/85">
                       {item.text}
                       {item.status === "streaming" ? <span className="caret-blink" /> : null}
