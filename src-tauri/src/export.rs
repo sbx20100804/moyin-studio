@@ -9,17 +9,34 @@ fn escape_xml(s: &str) -> String {
         .replace('\'', "&apos;")
 }
 
+/// Windows 设备名：即使带扩展名也不能当文件名（CON.docx 依然是设备）。
+const RESERVED_NAMES: [&str; 22] = [
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+];
+
 fn safe_name(name: &str) -> String {
     let cleaned: String = name
         .chars()
-        .map(|c| if "\\/:*?\"<>|".contains(c) { '_' } else { c })
+        .map(|c| {
+            if "\\/:*?\"<>|".contains(c) || (c as u32) < 0x20 {
+                '_'
+            } else {
+                c
+            }
+        })
         .collect();
-    let trimmed = cleaned.trim().trim_matches('.').to_string();
+    let trimmed = cleaned.trim();
+    // 结尾的点和空格会被 Windows 静默吃掉，导致写出来的文件名和预期不一致。
+    let trimmed = trimmed.trim_end_matches(['.', ' ']).trim();
     if trimmed.is_empty() {
-        "未命名".to_string()
-    } else {
-        trimmed
+        return "未命名".to_string();
     }
+    let stem = trimmed.split('.').next().unwrap_or("").to_ascii_uppercase();
+    if RESERVED_NAMES.contains(&stem.as_str()) {
+        return format!("_{trimmed}");
+    }
+    trimmed.to_string()
 }
 
 fn build_txt(title: &str, synopsis: &str, chapters: &[(String, String)]) -> String {
@@ -251,5 +268,10 @@ mod tests {
     fn unsafe_filename_is_sanitized() {
         assert_eq!(safe_name("a/b:c*?"), "a_b_c__");
         assert_eq!(safe_name("   "), "未命名");
+        // Windows 设备名带扩展名也不能用
+        assert_eq!(safe_name("CON"), "_CON");
+        assert_eq!(safe_name("com1.txt"), "_com1.txt");
+        // 结尾的点会被系统吃掉，先去掉
+        assert_eq!(safe_name("书名."), "书名");
     }
 }

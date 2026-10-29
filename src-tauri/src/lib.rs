@@ -89,12 +89,6 @@ fn get_chapter(db: State<'_, Db>, id: i64) -> Result<Chapter, String> {
 }
 
 #[tauri::command]
-fn get_chapter_content(db: State<'_, Db>, id: i64) -> Result<String, String> {
-    let conn = db.0.lock().map_err(|_| "数据库锁定失败".to_string())?;
-    db::get_chapter_content(&conn, id).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
 fn create_chapter(db: State<'_, Db>, project_id: i64, title: String) -> Result<ChapterMeta, String> {
     let conn = db.0.lock().map_err(|_| "数据库锁定失败".to_string())?;
     db::create_chapter(&conn, project_id, title.trim()).map_err(|e| e.to_string())
@@ -267,8 +261,8 @@ fn import_book(window: tauri::Window, db: State<'_, Db>) -> Result<Option<Projec
         return Ok(None);
     };
     let (title, chapters) = import::parse_file(&path)?;
-    let conn = db.0.lock().map_err(|_| "数据库锁定失败".to_string())?;
-    import::insert_book(&conn, &title, &chapters).map(Some)
+    let mut conn = db.0.lock().map_err(|_| "数据库锁定失败".to_string())?;
+    import::insert_book(&mut conn, &title, &chapters).map(Some)
 }
 
 #[tauri::command]
@@ -431,7 +425,6 @@ pub fn run() {
             delete_project,
             list_chapters,
             get_chapter,
-            get_chapter_content,
             create_chapter,
             save_chapter,
             update_chapter_meta,

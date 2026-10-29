@@ -183,20 +183,28 @@ fn ensure_column(
 }
 
 fn seed(conn: &Connection) -> rusqlite::Result<()> {
-    let project_count: i64 = conn.query_row("SELECT COUNT(*) FROM projects", [], |r| r.get(0))?;
+    // 示例作品与默认模型只在「第一次打开这个库」时写一次。
+    // 以前是按 COUNT(projects)==0 判断，用户把作品全删了，重启示例又会自己长回来。
+    let first_run = get_setting(conn, "seeded_at").is_none();
+    if first_run {
+        let profile_count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM profiles", [], |r| r.get(0))?;
+        if profile_count == 0 {
+            conn.execute(
+                "INSERT INTO profiles (name, base_url, model, api_key, temperature, max_tokens, is_default)
+                 VALUES (?1, ?2, ?3, '', 0.85, 2400, 1)",
+                params!["DeepSeek", "https://api.deepseek.com", "deepseek-chat"],
+            )?;
+        }
 
-    let profile_count: i64 = conn.query_row("SELECT COUNT(*) FROM profiles", [], |r| r.get(0))?;
-    if profile_count == 0 {
-        conn.execute(
-            "INSERT INTO profiles (name, base_url, model, api_key, temperature, max_tokens, is_default)
-             VALUES (?1, ?2, ?3, '', 0.85, 2400, 1)",
-            params!["DeepSeek", "https://api.deepseek.com", "deepseek-chat"],
-        )?;
+        let project_count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM projects", [], |r| r.get(0))?;
+        if project_count == 0 {
+            seed_demo(conn)?;
+        }
+        set_setting(conn, "seeded_at", &now())?;
     }
 
-    if project_count == 0 {
-        seed_demo(conn)?;
-    }
     // Demo chapters ship with summaries: treat them as up to date.
     conn.execute(
         "UPDATE chapters SET summary_words = word_count
@@ -212,12 +220,13 @@ fn seed(conn: &Connection) -> rusqlite::Result<()> {
         .query_row("SELECT value FROM settings WHERE key='last_project_id'", [], |r| r.get(0))
         .optional()?;
     if last.is_none() {
-        let id: i64 = conn.query_row("SELECT id FROM projects ORDER BY id LIMIT 1", [], |r| r.get(0))?;
-        conn.execute(
-            "INSERT INTO settings (key, value) VALUES ('last_project_id', ?1)
-             ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            params![id.to_string()],
-        )?;
+        // 全部作品删光时这里查不到行，不能让整个启动失败。
+        let id: Option<i64> = conn
+            .query_row("SELECT id FROM projects ORDER BY id LIMIT 1", [], |r| r.get(0))
+            .optional()?;
+        if let Some(id) = id {
+            set_setting(conn, "last_project_id", &id.to_string())?;
+        }
     }
     Ok(())
 }
@@ -398,11 +407,17 @@ pub fn update_project(conn: &Connection, p: &Project) -> rusqlite::Result<()> {
             p.style_guide,
             p.pov,
             p.genre,
-            p.target_words,
+            p.target_words.max(0),
             p.accent,
             if p.voice.is_empty() { "light" } else { &p.voice },
             p.style_sample,
-            if p.chapter_words > 0 { p.chapter_words } else { 2000 },
+            // 每章字数：低于 300 视为没设（回落到 2000），高于 8000 截断，
+            // 与前端 chapterWordsOf 的口径保持一致，避免表单里显示 5 万、实际按 8000 写。
+            if p.chapter_words >= 300 {
+                p.chapter_words.min(8000)
+            } else {
+                2000
+            },
             now(),
             p.id
         ],
@@ -495,25 +510,35 @@ pub fn save_chapter(
     content: &str,
 ) -> Result<SaveResult, String> {
     let wc = count_words(content);
+    let title = if title.trim().is_empty() {
+        "未命名章节"
+    } else {
+        title.trim()
+    };
     let t = now();
     // One transaction: a chapter write, the daily word counter and the project
     // timestamp either all land or none do.
     let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
     let old: i64 = tx
-        .query_row("SELECT word_count FROM chapters WHERE id=?1", params![id], |r| r.get(0))
+        .query_row(
+            "SELECT word_count FROM chapters WHERE id=?1 AND deleted_at IS NULL",
+            params![id],
+            |r| r.get(0),
+        )
         .optional()
         .map_err(|e| e.to_string())?
         .unwrap_or(0);
     let changed = tx
         .execute(
-            "UPDATE chapters SET title=?1, content=?2, word_count=?3, updated_at=?4 WHERE id=?5",
+            "UPDATE chapters SET title=?1, content=?2, word_count=?3, updated_at=?4
+             WHERE id=?5 AND deleted_at IS NULL",
             params![title, content, wc, t, id],
         )
         .map_err(|e| e.to_string())?;
     if changed == 0 {
-        // The chapter was purged while a save was in flight. Report it instead of
-        // pretending the write succeeded — that is how drafts disappear silently.
-        return Err("章节不存在（可能已被删除），这次保存没有写入".into());
+        // 章节被删（进回收站）或已被彻底删除：宁可报错，也不要假装写成功——
+        // 软删的行还在表里，不筛 deleted_at 的话 UPDATE 一样会命中。
+        return Err("章节不存在或已被删除，这次保存没有写入".into());
     }
     let delta = wc - old;
     if delta > 0 {
@@ -751,6 +776,25 @@ pub fn get_profile(conn: &Connection, id: i64) -> rusqlite::Result<Profile> {
 }
 
 pub fn save_profile(conn: &Connection, input: &ProfileInput) -> Result<Profile, String> {
+    // 表单里的数字框清空会传 0（甚至 NaN 变成 null），这里统一兜住，
+    // 免得把 max_tokens=0 的配置存进去，之后每次生成都空转。
+    if input.base_url.trim().is_empty() {
+        return Err("请先填写接口地址（Base URL）".into());
+    }
+    if input.model.trim().is_empty() {
+        return Err("请先填写模型名".into());
+    }
+    let temperature = if input.temperature.is_finite() {
+        input.temperature.clamp(0.0, 2.0)
+    } else {
+        0.85
+    };
+    let max_tokens = input.max_tokens.clamp(256, 65_536);
+    let context_window = if input.context_window > 0 {
+        input.context_window.clamp(2048, 2_000_000)
+    } else {
+        32768
+    };
     let existing_key: String = if input.id == 0 {
         String::new()
     } else {
@@ -775,9 +819,9 @@ pub fn save_profile(conn: &Connection, input: &ProfileInput) -> Result<Profile, 
                 input.base_url.trim(),
                 input.model.trim(),
                 key_blob,
-                input.temperature,
-                input.max_tokens,
-                if input.context_window > 0 { input.context_window } else { 32768 },
+                temperature,
+                max_tokens,
+                context_window,
                 input.is_default as i64
             ],
         )
@@ -792,9 +836,9 @@ pub fn save_profile(conn: &Connection, input: &ProfileInput) -> Result<Profile, 
                 input.base_url.trim(),
                 input.model.trim(),
                 key_blob,
-                input.temperature,
-                input.max_tokens,
-                if input.context_window > 0 { input.context_window } else { 32768 },
+                temperature,
+                max_tokens,
+                context_window,
                 input.is_default as i64,
                 input.id
             ],
@@ -927,6 +971,20 @@ pub fn get_snapshot(conn: &Connection, id: i64) -> rusqlite::Result<Snapshot> {
 
 pub fn restore_snapshot(conn: &Connection, id: i64) -> Result<SaveResult, String> {
     let snap = get_snapshot(conn, id).map_err(|e| e.to_string())?;
+    // 章节可能已经被删或进了回收站：这时候恢复正文只会写进一个看不见的行。
+    let deleted: Option<Option<String>> = conn
+        .query_row(
+            "SELECT deleted_at FROM chapters WHERE id=?1",
+            params![snap.meta.chapter_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    match deleted {
+        None => return Err("这一章已经不存在，无法恢复历史版本".into()),
+        Some(Some(_)) => return Err("这一章在回收站里，请先恢复章节再恢复版本".into()),
+        Some(None) => {}
+    }
     // Back up the current state so the restore itself can be undone.
     create_snapshot(conn, snap.meta.chapter_id, "恢复前自动备份").map_err(|e| e.to_string())?;
     let wc = count_words(&snap.content);
@@ -1049,29 +1107,6 @@ pub fn delete_thread(conn: &Connection, id: i64) -> rusqlite::Result<()> {
     Ok(())
 }
 
-pub fn open_thread_titles(conn: &Connection, project_id: i64) -> Vec<String> {
-    let mut out = Vec::new();
-    let Ok(mut stmt) = conn.prepare(
-        "SELECT title, detail FROM threads WHERE project_id=?1 AND status='open' ORDER BY id DESC LIMIT 10",
-    ) else {
-        return out;
-    };
-    let Ok(rows) = stmt.query_map(params![project_id], |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-    }) else {
-        return out;
-    };
-    for row in rows.flatten() {
-        let detail = row.1.trim().replace('\n', " ");
-        if detail.is_empty() {
-            out.push(row.0);
-        } else {
-            out.push(format!("{}：{}", row.0, detail.chars().take(80).collect::<String>()));
-        }
-    }
-    out
-}
-
 // ---------------------------------------------------------------- stats
 
 pub fn daily_stats(conn: &Connection, days: i64) -> Vec<DailyStat> {
@@ -1105,7 +1140,9 @@ pub fn search_chapters(
     if q.is_empty() {
         return Vec::new();
     }
-    let needle = q.to_lowercase();
+    // 只折叠 ASCII 大小写：`to_lowercase()` 会把 'İ' 这类字符变成多个字节，
+    // 之后再用它算出的偏移去切原文就会切在字符中间，直接 panic（release 下整个进程退出）。
+    let needle = q.to_ascii_lowercase();
     let mut hits = Vec::new();
 
     let Ok(mut stmt) = conn.prepare(
@@ -1127,7 +1164,7 @@ pub fn search_chapters(
 
     for row in rows.flatten() {
         let (id, title, content, position) = row;
-        let hay = content.to_lowercase();
+        let hay = content.to_ascii_lowercase();
         let mut from = 0usize;
         let mut found = 0;
         while hits.len() < limit as usize && found < 3 {
@@ -1135,6 +1172,10 @@ pub fn search_chapters(
                 break;
             };
             let byte_pos = from + idx;
+            if !content.is_char_boundary(byte_pos) {
+                from = byte_pos + needle.len().max(1);
+                continue;
+            }
             let char_pos = content[..byte_pos].chars().count();
             let start = content[..byte_pos]
                 .char_indices()
@@ -1273,13 +1314,18 @@ pub fn set_setting(conn: &Connection, key: &str, value: &str) -> rusqlite::Resul
 }
 
 #[cfg(test)]
+pub fn mem_conn() -> rusqlite::Result<Connection> {
+    let conn = Connection::open_in_memory()?;
+    migrate(&conn)?;
+    Ok(conn)
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
     fn mem() -> Connection {
-        let conn = Connection::open_in_memory().expect("open memory db");
-        migrate(&conn).expect("migrate");
-        conn
+        mem_conn().expect("open memory db")
     }
 
     #[test]
@@ -1305,5 +1351,94 @@ mod tests {
 
         let after: i64 = daily_stats(&conn, 7).iter().map(|d| d.words).sum();
         assert_eq!(before, after, "失败的保存不应该写进日更统计");
+    }
+
+    #[test]
+    fn save_chapter_rejects_soft_deleted_chapter() {
+        let conn = mem();
+        let project = create_project(&conn, "测试", "轻小说").unwrap();
+        let chapter = create_chapter(&conn, project.id, "第一章").unwrap();
+        save_chapter(&conn, chapter.id, "第一章", "原来的正文").unwrap();
+        delete_chapter(&conn, chapter.id).unwrap();
+
+        let err = save_chapter(&conn, chapter.id, "第一章", "删了还想写进去").unwrap_err();
+        assert!(err.contains("删除"), "unexpected error: {err}");
+
+        let content: String = conn
+            .query_row(
+                "SELECT content FROM chapters WHERE id=?1",
+                params![chapter.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(content, "原来的正文", "回收站里的章节不能被自动保存改写");
+    }
+
+    #[test]
+    fn restore_snapshot_refuses_deleted_chapter() {
+        let conn = mem();
+        let project = create_project(&conn, "测试", "轻小说").unwrap();
+        let chapter = create_chapter(&conn, project.id, "第一章").unwrap();
+        save_chapter(&conn, chapter.id, "第一章", "第一版正文").unwrap();
+        let snap = create_snapshot(&conn, chapter.id, "测试").unwrap();
+        save_chapter(&conn, chapter.id, "第一章", "第二版正文").unwrap();
+        delete_chapter(&conn, chapter.id).unwrap();
+
+        let err = restore_snapshot(&conn, snap.id).unwrap_err();
+        assert!(err.contains("回收站"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn seed_demo_only_runs_once() {
+        let conn = mem();
+        seed(&conn).unwrap();
+        let seeded: i64 = conn
+            .query_row("SELECT COUNT(*) FROM projects", [], |r| r.get(0))
+            .unwrap();
+        assert!(seeded > 0, "第一次打开应该带示例作品");
+
+        // 用户把作品全删了，重启不应该又长出示例。
+        conn.execute("DELETE FROM entities", []).unwrap();
+        conn.execute("DELETE FROM chapters", []).unwrap();
+        conn.execute("DELETE FROM projects", []).unwrap();
+        seed(&conn).unwrap();
+        let after: i64 = conn
+            .query_row("SELECT COUNT(*) FROM projects", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(after, 0, "删空作品后重开不应该再塞示例作品");
+    }
+
+    #[test]
+    fn search_is_case_insensitive_for_ascii() {
+        let conn = mem();
+        let project = create_project(&conn, "测试", "").unwrap();
+        let chapter = create_chapter(&conn, project.id, "第一章").unwrap();
+        save_chapter(
+            &conn,
+            chapter.id,
+            "第一章",
+            "The Rain came down on the river bank, and nobody moved.",
+        )
+        .unwrap();
+
+        let hits = search_chapters(&conn, project.id, "rain", 10);
+        assert_eq!(hits.len(), 1, "ASCII 大小写不该影响搜索");
+        assert_eq!(hits[0].chapter_id, chapter.id);
+    }
+
+    #[test]
+    fn save_chapter_falls_back_to_untitled() {
+        let conn = mem();
+        let project = create_project(&conn, "测试", "").unwrap();
+        let chapter = create_chapter(&conn, project.id, "第一章").unwrap();
+        save_chapter(&conn, chapter.id, "   ", "正文").unwrap();
+        let title: String = conn
+            .query_row(
+                "SELECT title FROM chapters WHERE id=?1",
+                params![chapter.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(title, "未命名章节");
     }
 }

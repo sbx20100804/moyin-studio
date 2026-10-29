@@ -1,4 +1,4 @@
-﻿//! Windows DPAPI helpers 鈥?API keys are encrypted with the current user's
+﻿//! Windows DPAPI helpers — API keys are encrypted with the current user's
 //! credentials before ever touching the database file.
 
 use base64::Engine;
@@ -65,7 +65,7 @@ pub fn protect(plain: &str) -> Result<String, String> {
             &mut out_blob,
         );
         if ok == 0 {
-            return Err("绯荤粺鍔犲瘑澶辫触 (DPAPI)".into());
+            return Err("系统加密失败 (DPAPI)".into());
         }
         let slice = std::slice::from_raw_parts(out_blob.pb_data, out_blob.cb_data as usize);
         let encoded = base64::engine::general_purpose::STANDARD.encode(slice);
@@ -80,7 +80,7 @@ pub fn unprotect(encoded: &str) -> Result<String, String> {
     }
     let mut raw = base64::engine::general_purpose::STANDARD
         .decode(encoded)
-        .map_err(|e| format!("瀵嗛挜瑙ｇ爜澶辫触: {e}"))?;
+        .map_err(|e| format!("密钥解码失败: {e}"))?;
     unsafe {
         let in_blob = DataBlob {
             cb_data: raw.len() as u32,
@@ -100,7 +100,7 @@ pub fn unprotect(encoded: &str) -> Result<String, String> {
             &mut out_blob,
         );
         if ok == 0 {
-            return Err("绯荤粺瑙ｅ瘑澶辫触锛氬瘑閽ュ彲鑳界敱鍏朵粬 Windows 璐︽埛淇濆瓨".into());
+            return Err("系统解密失败：密钥可能由其他 Windows 账户保存".into());
         }
         let slice = std::slice::from_raw_parts(out_blob.pb_data, out_blob.cb_data as usize);
         let text = String::from_utf8_lossy(slice).to_string();
@@ -108,4 +108,3 @@ pub fn unprotect(encoded: &str) -> Result<String, String> {
         Ok(text)
     }
 }
-

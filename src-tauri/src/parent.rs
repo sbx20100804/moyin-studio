@@ -11,7 +11,7 @@ impl raw_window_handle::HasWindowHandle for ParentHandle {
         use raw_window_handle::{RawWindowHandle, WindowHandle};
         use std::num::NonZeroIsize;
         let hwnd = NonZeroIsize::new(self.0).ok_or(raw_window_handle::HandleError::Unavailable)?;
-        let handle = unsafe { raw_window_handle::Win32WindowHandle::new(hwnd) };
+        let handle = raw_window_handle::Win32WindowHandle::new(hwnd);
         Ok(unsafe { WindowHandle::borrow_raw(RawWindowHandle::Win32(handle)) })
     }
 }

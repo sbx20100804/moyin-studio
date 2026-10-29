@@ -64,12 +64,13 @@ fn extract_docx_text(xml: &str) -> String {
     }
 
     // Decode the handful of XML entities Word emits.
+    // `&amp;` 必须最后替换：先换它会把 "&amp;lt;" 二次解码成 "<"。
     let out = out
-        .replace("&amp;", "&")
         .replace("&lt;", "<")
         .replace("&gt;", ">")
         .replace("&quot;", "\"")
-        .replace("&apos;", "'");
+        .replace("&apos;", "'")
+        .replace("&amp;", "&");
 
     // Paragraphs were emitted as a single newline; keep blank lines tidy.
     let mut cleaned = String::new();
@@ -191,17 +192,37 @@ pub fn parse_file(path: &std::path::Path) -> Result<(String, Vec<(String, String
 }
 
 /// Creates the project and chapter rows. Caller holds the database lock.
+///
+/// 整本导入必须是一个事务：中途失败时不能留下半个作品。
+/// 这里也刻意不走 `db::save_chapter`——那个函数会把这批字数记进「今日新增」，
+/// 导入一本 20 万字的旧稿不该让写作统计凭空多出 20 万字。
 pub fn insert_book(
-    conn: &Connection,
+    conn: &mut Connection,
     title: &str,
     chapters: &[(String, String)],
 ) -> Result<Project, String> {
-    let project = db::create_project(conn, title, "").map_err(|e| e.to_string())?;
-    for (chapter_title, content) in chapters.iter() {
-        let meta = db::create_chapter(conn, project.id, chapter_title).map_err(|e| e.to_string())?;
-        db::save_chapter(conn, meta.id, chapter_title, content)?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let project = db::create_project(&tx, title, "").map_err(|e| e.to_string())?;
+    let t = db::now();
+    for (i, (chapter_title, content)) in chapters.iter().enumerate() {
+        tx.execute(
+            "INSERT INTO chapters (project_id, title, content, summary, volume, position, status,
+                                   word_count, created_at, updated_at)
+             VALUES (?1, ?2, ?3, '', '', ?4, 'draft', ?5, ?6, ?6)",
+            rusqlite::params![
+                project.id,
+                chapter_title,
+                content,
+                i as i64,
+                db::count_words(content),
+                t
+            ],
+        )
+        .map_err(|e| e.to_string())?;
     }
-    db::get_project(conn, project.id).map_err(|e| e.to_string())
+    let out = db::get_project(&tx, project.id).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -251,5 +272,31 @@ mod tests {
         let text = extract_docx_text(xml);
         assert!(text.contains("第一段"));
         assert!(text.contains("第二段"));
+    }
+
+    #[test]
+    fn does_not_double_unescape_entities() {
+        // 原文里真的有 "&lt;" 时，Word 会写成 "&amp;lt;"：只能解一层。
+        let xml = "<w:p><w:r><w:t>A&amp;lt;B</w:t></w:r></w:p>";
+        let text = extract_docx_text(xml);
+        assert!(text.contains("A&lt;B"), "unexpected: {text}");
+    }
+
+    #[test]
+    fn import_does_not_count_as_todays_writing() {
+        let mut conn = crate::db::mem_conn().unwrap();
+        let chapters = vec![
+            ("第一章 起".to_string(), "一二三四五".to_string()),
+            ("第二章 承".to_string(), "六七八九十".to_string()),
+        ];
+        let project = insert_book(&mut conn, "导入的书", &chapters).unwrap();
+        assert_eq!(project.chapter_count, 2);
+        assert_eq!(project.word_count, 10);
+
+        let total: i64 = crate::db::daily_stats(&conn, 30)
+            .iter()
+            .map(|d| d.words)
+            .sum();
+        assert_eq!(total, 0, "导入旧稿不该算进今日写作");
     }
 }

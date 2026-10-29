@@ -280,6 +280,50 @@ async fn wait_for_cancel(cancel: Arc<AtomicBool>) {
     }
 }
 
+/// 处理一行 SSE 数据，把正文/思考过程推给前端。返回 true 表示收到 [DONE]。
+fn handle_sse_line(app: &AppHandle, request_id: &str, raw: &str) -> Result<bool, String> {
+    let line = raw.trim();
+    let Some(data) = line.strip_prefix("data:") else {
+        return Ok(false);
+    };
+    let data = data.trim();
+    if data.is_empty() {
+        return Ok(false);
+    }
+    if data == "[DONE]" {
+        return Ok(true);
+    }
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(data) else {
+        return Ok(false);
+    };
+    if let Some(err) = value.get("error") {
+        return Err(format!("模型错误: {err}"));
+    }
+    if let Some(reasoning) = value
+        .pointer("/choices/0/delta/reasoning_content")
+        .and_then(|v| v.as_str())
+    {
+        if !reasoning.is_empty() {
+            let _ = app.emit(
+                "ai://reasoning",
+                json!({"requestId": request_id, "text": reasoning}),
+            );
+        }
+    }
+    if let Some(text) = value
+        .pointer("/choices/0/delta/content")
+        .and_then(|v| v.as_str())
+    {
+        if !text.is_empty() {
+            let _ = app.emit(
+                "ai://delta",
+                json!({"requestId": request_id, "text": text}),
+            );
+        }
+    }
+    Ok(false)
+}
+
 async fn run_stream(
     app: &AppHandle,
     url: &str,
@@ -343,46 +387,17 @@ async fn run_stream(
 
         while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
             let line_bytes: Vec<u8> = buf.drain(..=pos).collect();
-            let line = String::from_utf8_lossy(&line_bytes).trim().to_string();
-            if line.is_empty() {
-                continue;
-            }
-            let Some(data) = line.strip_prefix("data:") else {
-                continue;
-            };
-            let data = data.trim();
-            if data == "[DONE]" {
+            let line = String::from_utf8_lossy(&line_bytes).to_string();
+            if handle_sse_line(app, request_id, &line)? {
                 break 'outer;
             }
-            let Ok(value) = serde_json::from_str::<serde_json::Value>(data) else {
-                continue;
-            };
-            if let Some(err) = value.get("error") {
-                return Err(format!("模型错误: {err}"));
-            }
-            if let Some(reasoning) = value
-                .pointer("/choices/0/delta/reasoning_content")
-                .and_then(|v| v.as_str())
-            {
-                if !reasoning.is_empty() {
-                    let _ = app.emit(
-                        "ai://reasoning",
-                        json!({"requestId": request_id, "text": reasoning}),
-                    );
-                }
-            }
-            if let Some(text) = value
-                .pointer("/choices/0/delta/content")
-                .and_then(|v| v.as_str())
-            {
-                if !text.is_empty() {
-                    let _ = app.emit(
-                        "ai://delta",
-                        json!({"requestId": request_id, "text": text}),
-                    );
-                }
-            }
         }
+    }
+
+    // 有的服务最后一块不带换行就断流，剩在缓冲区里的正文不能丢。
+    if !aborted && !buf.is_empty() {
+        let tail = String::from_utf8_lossy(&buf).to_string();
+        handle_sse_line(app, request_id, &tail)?;
     }
 
     if !aborted && cancel.load(Ordering::Relaxed) {
@@ -436,7 +451,16 @@ pub async fn summarize_chapter(
         return Err("本章还没有正文".into());
     }
 
-    let excerpt: String = content.chars().take(14000).collect();
+    // 摘要在长章上要同时看开头和结尾：只截前 14000 字会把章末的转折与钩子漏掉，
+    // 摘要一错，后面几章的上下文就跟着错。
+    let chars: Vec<char> = content.chars().collect();
+    let excerpt: String = if chars.len() <= 14000 {
+        content.clone()
+    } else {
+        let head: String = chars[..9000].iter().collect();
+        let tail: String = chars[chars.len() - 5000..].iter().collect();
+        format!("{head}\n\n……（中间略）……\n\n{tail}")
+    };
     let body = json!({
         "model": profile.model,
         "messages": [
@@ -821,7 +845,15 @@ pub async fn extract_entities(
         return Err("本章还没有正文".into());
     }
 
-    let excerpt: String = chapter.content.chars().take(12000).collect();
+    // 和后文摘要一样：长章只看开头会漏掉后半段才出场的人物与地点。
+    let chars: Vec<char> = chapter.content.chars().collect();
+    let excerpt: String = if chars.len() <= 12000 {
+        chapter.content.clone()
+    } else {
+        let head: String = chars[..8000].iter().collect();
+        let tail: String = chars[chars.len() - 4000..].iter().collect();
+        format!("{head}\n\n……（中间略）……\n\n{tail}")
+    };
     let known = existing
         .iter()
         .map(|e| e.name.as_str())
