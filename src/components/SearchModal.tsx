@@ -18,6 +18,7 @@ export default function SearchModal() {
   const openSearchHit = useStore((s) => s.openSearchHit);
   const draft = useStore((s) => s.draft);
   const setDraft = useStore((s) => s.setDraft);
+  const activeChapterId = useStore((s) => s.activeChapterId);
   const toast = useStore((s) => s.toast);
 
   const [q, setQ] = useState("");
@@ -36,7 +37,9 @@ export default function SearchModal() {
     if (!open) return;
     const query = q.trim();
     if (!query || projectId == null) {
+      // 清空搜索词时要顺手把 loading 收掉，否则标题栏会一直停在「搜索中…」
       setHits([]);
+      setSearching(false);
       return;
     }
     setSearching(true);
@@ -91,8 +94,14 @@ export default function SearchModal() {
           variant="outline"
           size="sm"
           disabled={!q.trim() || !draft || chapterMatches === 0}
-          onClick={() => {
-            if (!draft) return;
+          onClick={async () => {
+            if (!draft || activeChapterId == null) return;
+            // 整章批量替换是不可逆的：先存一份快照，替换错了还能从「历史」里回来。
+            try {
+              await api.createSnapshot(activeChapterId, "全文替换前");
+            } catch {
+              /* 快照失败不阻断替换，和 AI 写入的处理保持一致 */
+            }
             setDraft({ content: draft.content.split(q.trim()).join(replacement) });
             toast(`已替换本章 ${chapterMatches} 处`, "success");
           }}

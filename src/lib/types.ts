@@ -117,7 +117,14 @@ export interface ChatMessage {
   content: string;
 }
 
-export type GenKind = "continue" | "finish" | "rewrite" | "rewriteChapter" | "outline" | "custom";
+export type GenKind =
+  | "continue"
+  | "finish"
+  | "expand"
+  | "rewrite"
+  | "rewriteChapter"
+  | "outline"
+  | "custom";
 
 export interface Selection {
   start: number;
@@ -138,6 +145,64 @@ export interface GenDraft {
   profileName: string;
   startedAt: number;
   applied?: boolean;
+  /** 和 AI 写手对话时，这条回复属于哪一轮 */
+  chatTurn?: number;
+  /** 本次生成的目标字符数（含标点），用来判断写完没写够 */
+  targetChars?: number;
+  /** 开始生成时正文已有的字符数（不含空白），校验缺口时的基线 */
+  baseChars?: number;
+  /** 已经自动补写了几轮 */
+  rounds?: number;
+  /** 当前这一轮真正在跑的 requestId；自动补写会换 id，gen.id 保持不变 */
+  requestId?: string;
+  /** 正在自动补写（正文没写够，接着让模型往下写） */
+  continuing?: boolean;
+}
+
+/** 与 AI 写手的一轮对话。 */
+export interface ChatTurn {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  createdAt: number;
+  status: "done" | "streaming" | "error";
+  error?: string;
+  /** 回复里提出的写作动作，用户点一下就能执行 */
+  actions?: ChatAction[];
+  /** 回复自带的章节标题（写正文时用） */
+  title?: string;
+  /** 用户是否已经把这条回复写进正文 */
+  applied?: boolean;
+  /** 回复里提出要改/补的设定卡 */
+  entityPatches?: EntityPatch[];
+  /** 这些设定卡是否已经写进设定库 */
+  entitiesApplied?: boolean;
+}
+
+/** 一轮对话里提出的设定卡改动，按名字定位。 */
+export interface EntityPatch {
+  name: string;
+  /** 是否已存在于设定库 */
+  existing: boolean;
+  kind?: EntityKind;
+  role?: string;
+  description?: string;
+  aliases?: string;
+  speechStyle?: string;
+  speechLength?: "short" | "medium" | "long";
+  speechWords?: string;
+  speechTaboo?: string;
+}
+
+export type ChatActionKind = "continue" | "finish" | "rewriteChapter" | "outline";
+
+export interface ChatAction {
+  id: string;
+  kind: ChatActionKind;
+  label: string;
+  /** 写死给模型的追加指令，例如「按刚才商量的方向续写」 */
+  instruction?: string;
+  done?: boolean;
 }
 
 export interface SnapshotMeta {

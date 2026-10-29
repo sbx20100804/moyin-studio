@@ -24,12 +24,14 @@ import { cx, estimateTokens, looksLikeMeta } from "@/lib/format";
 import { useStore } from "@/lib/store";
 import type { GenKind } from "@/lib/types";
 import DiffView from "./DiffView";
+import ChatPanel from "./ChatPanel";
 import { Button, IconButton, TextArea } from "./ui";
 
 const KIND_META: Record<GenKind, { label: string; icon: typeof PenLine }> = {
   continue: { label: "续写", icon: PenLine },
   finish: { label: "写完本章", icon: CornerDownLeft },
   rewrite: { label: "改写", icon: Wand2 },
+  expand: { label: "扩写", icon: Feather },
   rewriteChapter: { label: "整章重写", icon: RefreshCw },
   outline: { label: "章纲", icon: ListTree },
   custom: { label: "自定义", icon: Sparkles },
@@ -41,6 +43,13 @@ function ContextMeter() {
   const chapter = useStore((s) => s.chapters.find((c) => c.id === s.activeChapterId));
   const entities = useStore((s) => s.entities);
   const content = useStore((s) => s.draft?.content ?? "");
+  // 每敲一个字都把整份提示词（含召回、设定排序、裁剪）拼一遍太贵了，
+  // 仪表盘晚 500ms 更新完全够用。
+  const [sizedContent, setSizedContent] = useState(content);
+  useEffect(() => {
+    const t = setTimeout(() => setSizedContent(content), 500);
+    return () => clearTimeout(t);
+  }, [content]);
   const profile = useStore(
     (s) => s.profiles.find((p) => p.id === s.activeProfileId) ?? s.profiles[0]
   );
@@ -59,7 +68,7 @@ function ContextMeter() {
       chapters,
       entities,
       chapter,
-      content,
+      content: sizedContent,
       kind: "continue",
       contextWindow: profile?.contextWindow,
       promptTemplate,
@@ -67,7 +76,7 @@ function ContextMeter() {
       foreshadows,
     });
     return built.meta;
-  }, [project, chapter, chapters, entities, content, profile, promptTemplate, threads]);
+  }, [project, chapter, chapters, entities, sizedContent, profile, promptTemplate, threads]);
 
   if (!meta) return null;
 
@@ -171,8 +180,11 @@ export default function AIPanel() {
     s.profiles.find((p) => p.id === s.activeProfileId) ?? s.profiles[0]
   );
   const setSettingsOpen = useStore((s) => s.setSettingsOpen);
+  const project = useStore((s) => s.projects.find((p) => p.id === s.activeProjectId));
+  const chapterTarget = project?.chapterWords || 2000;
   const [instruction, setInstruction] = useState("");
   const [view, setView] = useState<"result" | "diff">("result");
+  const [aiTab, setAiTab] = useState<"write" | "chat">("write");
   const [showReasoning, setShowReasoning] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -198,6 +210,11 @@ export default function AIPanel() {
   const metaReply = Boolean(gen && !streaming && looksLikeMeta(gen.text));
   const hasSelection = Boolean(selection?.text.trim());
   const meta = gen ? KIND_META[gen.kind] : null;
+  // 字数核对：这一章「已写 + 本轮生成」对比「每章字数」
+  const genChars = (gen?.baseChars ?? 0) + (gen?.text ?? "").replace(/\s/g, "").length;
+  const genWords = Math.round(genChars / 1.2);
+  const genTargetWords = gen?.targetChars ? Math.round(gen.targetChars / 1.2) : 0;
+  const shortOfTarget = genTargetWords > 0 && genWords < genTargetWords * 0.9;
   const multi = useStore((s) => s.multi);
   const runAIMulti = useStore((s) => s.runAIMulti);
   const acceptCandidate = useStore((s) => s.acceptCandidate);
@@ -221,7 +238,7 @@ export default function AIPanel() {
     {
       kind: "finish",
       label: "写完本章",
-      hint: "按目标字数把这一章收尾",
+      hint: `补到 ${chapterTarget} 字再收尾`,
       icon: CornerDownLeft,
     },
     { kind: "rewrite", label: "润色选中", hint: hasSelection ? "保留情节" : "先选中一段", icon: Wand2, disabled: !hasSelection },
@@ -230,6 +247,13 @@ export default function AIPanel() {
       label: "重写本章",
       hint: hasContent ? "换写法，不动情节" : "本章还没正文",
       icon: RefreshCw,
+      disabled: !hasContent,
+    },
+    {
+      kind: "expand",
+      label: "扩写",
+      hint: hasSelection ? "加细节，不动情节" : "整章按章纲补细节",
+      icon: Feather,
       disabled: !hasContent,
     },
     { kind: "outline", label: "推演章纲", hint: "接下来五章", icon: ListTree },
@@ -253,11 +277,32 @@ export default function AIPanel() {
           {profile ? profile.model : "未配置"}
         </span>
         <div className="flex-1" />
+        {(
+          [
+            ["chat", "对话"],
+            ["write", "写作"],
+          ] as const
+        ).map(([key, label]) => (
+          <button
+            key={key}
+            onClick={() => setAiTab(key)}
+            className={cx(
+              "rounded-lg px-2 py-0.5 text-[10.5px] transition-colors",
+              aiTab === key ? "bg-gold/12 text-gold" : "text-mute hover:text-ink"
+            )}
+          >
+            {label}
+          </button>
+        ))}
         <IconButton onClick={() => setAiOpen(false)} title="收起面板">
           <X size={13} />
         </IconButton>
       </div>
 
+      {aiTab === "chat" ? (
+        <ChatPanel />
+      ) : (
+      <>
       <div className="scroll-thin flex-1 overflow-y-auto p-3.5">
         <div className="grid grid-cols-2 gap-2">
           {actions.map((a) => {
@@ -291,6 +336,9 @@ export default function AIPanel() {
           >
             <Layers size={11} /> 三版同写，挑一版
           </button>
+        </div>
+        <div className="mt-1 text-center text-[9.5px] text-mute/70">
+          三版各写「每章字数 ÷ 3」，挑一版接上去正好凑满一章
         </div>
 
         <div className="relative mt-2.5">
@@ -438,11 +486,28 @@ export default function AIPanel() {
                     ? ` · ${gen.selection.text.replace(/\s/g, "").length} 字`
                     : ""}
                 </span>
+                {genTargetWords > 0 ? (
+                  <span
+                    title={
+                      shortOfTarget
+                        ? `距目标还差约 ${Math.max(0, genTargetWords - genWords)} 字`
+                        : "已写够本章目标字数"
+                    }
+                    className={cx(
+                      "rounded-full border px-1.5 py-0.5 text-[9.5px] tabular-nums",
+                      shortOfTarget && !streaming
+                        ? "border-gold/45 text-gold/90"
+                        : "border-line/70 text-mute"
+                    )}
+                  >
+                    {genWords} / {genTargetWords} 字
+                  </span>
+                ) : null}
                 <span className="flex-1" />
                 {streaming ? (
                   <span className="flex items-center gap-1.5 text-[10px] text-gold/80">
                     <span className="h-1 w-1 animate-pulse rounded-full bg-gold" />
-                    正在写
+                    {gen.continuing ? "正在补写" : "正在写"}
                   </span>
                 ) : gen.status === "error" ? (
                   <span className="text-[10px] text-cinnabar">出错</span>
@@ -644,6 +709,17 @@ export default function AIPanel() {
                     >
                       <RefreshCw size={10} /> 重写
                     </Button>
+                    {gen.kind === "finish" && shortOfTarget && !gen.applied ? (
+                      <Button
+                        variant="ghost"
+                        size="xs"
+                        onClick={() => void useStore.getState().continueShort(true)}
+                        disabled={streaming}
+                        title={`还差约 ${Math.max(0, genTargetWords - genWords)} 字`}
+                      >
+                        <Feather size={10} /> 继续补写
+                      </Button>
+                    ) : null}
                     <Button
                       variant="ghost"
                       size="xs"
@@ -714,6 +790,8 @@ export default function AIPanel() {
           配置
         </button>
       </div>
+      </>
+      )}
     </motion.aside>
   );
 }

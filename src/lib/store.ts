@@ -1,14 +1,17 @@
 import { create } from "zustand";
 import { api } from "./api";
-import { buildMessages, QUICK_ACTIONS } from "./ai";
+import { buildChatMessages, buildMessages, QUICK_ACTIONS, splitChatActions } from "./ai";
 import { chineseNumber, cleanGenerated } from "./format";
 import { analyzeHuman } from "./humanize";
 import type {
   Candidate,
   ChapterMeta,
+  ChatAction,
+  ChatTurn,
   DailyStat,
   Entity,
   EntityKind,
+  EntityPatch,
   GenDraft,
   GenKind,
   Profile,
@@ -172,6 +175,11 @@ interface Store {
   cancelMulti: () => void;
   /** 三版都写完后，让模型自动评估哪一版最值得采用 */
   maybeJudgeCandidates: () => Promise<void>;
+  /**
+   * 「写完本章」没写够时接着往下写。默认只在不足目标 90% 且未满两轮时触发；
+   * force 为真时由用户点「继续补写」强制再要一段。
+   */
+  continueShort: (force?: boolean) => Promise<void>;
   restoreSnapshot: (id: number) => Promise<void>;
   summarizeNow: (chapterId: number) => Promise<string | null>;
   maybeAutoSummarize: (chapterId: number) => Promise<void>;
@@ -184,10 +192,53 @@ interface Store {
   closeExport: () => void;
   setExportFormat: (format: ExportFormat) => void;
   setExportIds: (ids: number[]) => void;
+
+  // ---- 与 AI 写手对话
+  chat: ChatTurn[];
+  chatBusy: boolean;
+  /** 对话轮询到正文写手那条流式消息上的 request id */
+  chatRequestId: string | null;
+  sendChat: (text: string) => Promise<void>;
+  cancelChat: () => Promise<void>;
+  clearChat: () => void;
+  /** 把对话里的回复直接写进左边正文（空章写入、有正文就接在文末） */
+  applyChatText: (text: string, opts?: { title?: string }) => Promise<void>;
+  /** 把对话里提出的设定卡改动写进设定库 */
+  applyChatEntities: (patches: EntityPatch[]) => Promise<number>;
 }
 
 function applyTheme(theme: "dark" | "light") {
   document.documentElement.classList.toggle("dark", theme === "dark");
+}
+
+type SetFn = (partial: Partial<Store> | ((s: Store) => Partial<Store>)) => void;
+
+/** 新建一章并切过去。标题按序号生成，也可以直接给死标题。 */
+async function createChapterAt(
+  projectId: number,
+  count: number,
+  forcedTitle: string | undefined,
+  set: SetFn
+) {
+  const title = (forcedTitle ?? "").trim() || `第${chineseNumber(count + 1)}章 未命名`;
+  const chapter = await api.createChapter(projectId, title);
+  set((s) => ({
+    chapters: [...s.chapters, chapter],
+    activeChapterId: chapter.id,
+    draft: { title: chapter.title, content: "" },
+    dirty: false,
+    selection: null,
+    gen: null,
+    multi: null,
+    savedAt: Date.now(),
+  }));
+  set((s) => ({
+    projects: s.projects.map((p) =>
+      p.id === s.activeProjectId
+        ? { ...p, chapterCount: (s.chapters ?? []).length }
+        : p
+    ),
+  }));
 }
 
 /**
@@ -198,6 +249,47 @@ function chapterWordsOf(project: Project | undefined): number {
   const words = project?.chapterWords ?? 0;
   if (words >= 300) return Math.min(8000, words);
   return 2000;
+}
+
+/** 单次输出上限：再高多数 OpenAI 兼容服务会直接 400。 */
+const MAX_OUT_TOKENS = 16000;
+
+/** 推理模型的思考过程也占 max_tokens，额度必须放大，否则正文写不了几个字。 */
+function isReasoningModel(model: string): boolean {
+  return /reason|thinking|deepseek-r1|(^|[-_/])r1($|[-_/])|(^|[-_/])o[13]($|[-_/])|qwq/i.test(
+    model
+  );
+}
+
+function activeProfile(s: { profiles: Profile[]; activeProfileId: number | null }) {
+  return (
+    s.profiles.find((p) => p.id === s.activeProfileId) ??
+    s.profiles.find((p) => p.isDefault) ??
+    s.profiles[0]
+  );
+}
+
+/**
+ * 把「还要写多少字」换算成 max_tokens。
+ * 中文约 1.35 字符/token，留 15% 余量再留 400 给收尾；
+ * 上限取 min(16000, 上下文窗口的一半)，保证输入不会被输出额度挤掉。
+ */
+function tokensForChars(
+  chars: number,
+  floor: number,
+  contextWindow?: number,
+  model?: string
+): number {
+  const need = Math.ceil((Math.max(chars, 0) / 1.35) * 1.15) + 400;
+  const boosted = Math.ceil(need * (isReasoningModel(model ?? "") ? 1.8 : 1));
+  const win = contextWindow && contextWindow > 0 ? contextWindow : 32768;
+  const ceiling = Math.max(1024, Math.min(MAX_OUT_TOKENS, Math.floor(win / 2)));
+  return Math.min(ceiling, Math.max(need, boosted, Math.min(floor, ceiling)));
+}
+
+/** 生成结果（含已补写的轮次）当前占多少字符，空白不算。 */
+function producedChars(gen: { text: string; baseChars?: number }): number {
+  return (gen.baseChars ?? 0) + gen.text.replace(/\s/g, "").length;
 }
 
 export const useStore = create<Store>((set, get) => ({
@@ -238,6 +330,9 @@ export const useStore = create<Store>((set, get) => ({
   searchOpen: false,
   onboardingOpen: false,
   exportRequest: null,
+  chat: [],
+  chatBusy: false,
+  chatRequestId: null,
 
   async bootstrap() {
     try {
@@ -275,7 +370,7 @@ export const useStore = create<Store>((set, get) => ({
   setTheme(theme) {
     applyTheme(theme);
     set({ theme });
-    void api.setSetting("theme", theme);
+    void api.setSetting("theme", theme).catch(() => {});
   },
 
   toggleTheme() {
@@ -323,8 +418,12 @@ export const useStore = create<Store>((set, get) => ({
       gen: null,
       multi: null,
       selection: null,
+      // 对话历史跟着作品走：切作品还留着上一个作品的上下文，模型会当成同一本书。
+      chat: [],
+      chatBusy: false,
+      chatRequestId: null,
     });
-    void api.setSetting("last_project_id", String(id));
+    void api.setSetting("last_project_id", String(id)).catch(() => {});
     if (chapters[0]) await get().openChapter(chapters[0].id);
   },
 
@@ -467,24 +566,94 @@ export const useStore = create<Store>((set, get) => ({
       return;
     }
     if (get().multi) get().cancelMulti();
-    const title = `第${chineseNumber(chapters.length + 1)}章 未命名`;
-    const chapter = await api.createChapter(activeProjectId, title);
-    set((s) => ({
-      chapters: [...s.chapters, chapter],
-      activeChapterId: chapter.id,
-      draft: { title: chapter.title, content: "" },
-      dirty: false,
-      selection: null,
-      gen: null,
-      multi: null,
-      savedAt: Date.now(),
-      aiOpen: s.aiOpen,
-    }));
-    set((s) => ({
-      projects: s.projects.map((p) =>
-        p.id === s.activeProjectId ? { ...p, chapterCount: s.chapters.length } : p
-      ),
-    }));
+    await createChapterAt(activeProjectId, chapters.length, undefined, set);
+  },
+
+  /** 从对话插入正文：已有正文就接在文末，空章就写进去；可选顺便定标题。 */
+  async applyChatText(text, opts) {
+    const s = get();
+    const cleaned = text.trim();
+    if (!cleaned) return;
+    const title = opts?.title?.trim();
+    const chapterId = s.activeChapterId;
+    if (chapterId == null) {
+      get().toast("先选一个章节", "error");
+      return;
+    }
+    if (!s.draft) return;
+
+    const savedNow = await get().saveNow();
+    if (!savedNow) {
+      get().toast("保存失败，已取消写入，避免丢稿", "error");
+      return;
+    }
+    try {
+      await api.createSnapshot(chapterId, "AI 对话写入前");
+    } catch (err) {
+      get().toast(`快照失败，仍继续写入：${err}`, "error");
+    }
+    if (title) {
+      await get().updateChapterMeta(chapterId, { title: title.slice(0, 60) });
+    }
+
+    const cur = get().draft?.content ?? "";
+    if (!cur.trim()) {
+      // 空章：直接写进去
+      get().setDraft({ content: cleaned });
+      set({ caretRequest: cleaned.length });
+      get().toast("AI 已写入本章，可以继续让它往下写", "success");
+      return;
+    }
+    // 已有正文：接在文末
+    const sep = cur.endsWith("\n\n") ? "" : cur.endsWith("\n") ? "\n" : "\n\n";
+    get().setDraft({ content: cur + sep + cleaned });
+    set({ caretRequest: cur.length + sep.length + cleaned.length });
+    get().toast("AI 已接着文末写完", "success");
+  },
+
+  /** 把对话里提出的设定卡改动写进设定库（按名字匹配：有就覆盖填了的字段，没有就新建）。 */
+  async applyChatEntities(patches) {
+    const projectId = get().activeProjectId;
+    if (projectId == null || !patches.length) return 0;
+    const norm = (n: string) => n.trim().toLowerCase();
+    let written = 0;
+    for (const p of patches) {
+      const existing = get().entities.find((e) => norm(e.name) === norm(p.name));
+      const base: Entity =
+        existing ?? {
+          id: 0,
+          projectId,
+          kind: p.kind ?? "concept",
+          name: p.name.trim(),
+          aliases: "",
+          role: "",
+          description: "",
+          speechStyle: "",
+          speechLength: "medium",
+          speechWords: "",
+          speechTaboo: "",
+          updatedAt: new Date().toISOString(),
+        };
+      // 覆盖式：只写模型给了的字段，没给的保留原值
+      await get().saveEntity(
+        {
+          ...base,
+          kind: p.kind ?? base.kind,
+          role: p.role ?? base.role,
+          description: p.description ?? base.description,
+          aliases: p.aliases ?? base.aliases,
+          speechStyle: p.speechStyle ?? base.speechStyle,
+          speechLength: p.speechLength ?? base.speechLength,
+          speechWords: p.speechWords ?? base.speechWords,
+          speechTaboo: p.speechTaboo ?? base.speechTaboo,
+          updatedAt: new Date().toISOString(),
+        },
+        { silent: true }
+      );
+      written += 1;
+    }
+    get().toast(`已更新 ${written} 张设定卡`, "success");
+    return written;
   },
 
   async removeChapter(id) {
@@ -726,14 +895,15 @@ export const useStore = create<Store>((set, get) => ({
       get().toast("请先在正文中选中要改写的段落", "error");
       return;
     }
+    if (kind === "expand" && !s.draft.content.trim()) {
+      get().toast("这一章还没有正文，没什么可扩写的", "error");
+      return;
+    }
     if (kind === "rewriteChapter" && !s.draft.content.trim()) {
       get().toast("这一章还没有正文，没什么可重写的", "error");
       return;
     }
-    const profile =
-      s.profiles.find((p) => p.id === s.activeProfileId) ??
-      s.profiles.find((p) => p.isDefault) ??
-      s.profiles[0];
+    const profile = activeProfile(s);
     if (!profile) {
       get().toast("还没有模型配置，先添加一个", "error");
       set({ settingsOpen: true });
@@ -748,15 +918,16 @@ export const useStore = create<Store>((set, get) => ({
     const quick = QUICK_ACTIONS.find((a) => a.kind === kind);
     const finalInstruction = instruction?.trim() || quick?.instruction || "";
     const anchor =
-      kind === "rewrite" || kind === "rewriteChapter"
+      kind === "rewrite" || kind === "rewriteChapter" || kind === "expand"
         ? undefined
         : kind === "finish"
           ? s.draft.content.length
           : (s.selection?.end ?? s.caret ?? s.draft.content.length);
 
     // Keyword retrieval over earlier chapters + open plot threads.
+    const textOnTask = kind === "rewrite" || kind === "rewriteChapter" || kind === "expand";
     let retrieved: { title: string; text: string }[] = [];
-    if (kind !== "rewrite" && kind !== "rewriteChapter" && s.draft.content.length > 200) {
+    if (!textOnTask && s.draft.content.length > 200) {
       const query = `${s.draft.content.slice(-600)}\n${chapter.outline}\n${finalInstruction}`;
       try {
         retrieved = await api.retrieveContext(project.id, query, chapter.id, 4);
@@ -768,6 +939,49 @@ export const useStore = create<Store>((set, get) => ({
       .filter((t) => t.status === "open")
       .slice(0, 8)
       .map((t) => (t.detail.trim() ? `${t.title}：${t.detail.trim()}` : t.title));
+
+    const chapterWords = chapterWordsOf(project);
+    const writtenChars = s.draft.content.replace(/\s/g, "").length;
+    const chapterTargetChars = Math.round(chapterWords * 1.2);
+
+    // 输出额度按「这次真的要写多少字」算，别再让 profile 里的默认 max_tokens 卡住。
+    // 改写/重写/扩写原来一律吃 2400，长段落会被硬切在半截（再被截断保护拒掉）。
+    const selectionChars = s.selection?.text.replace(/\s/g, "").length ?? 0;
+    const contentChars = s.draft.content.replace(/\s/g, "").length;
+    let needChars: number;
+    switch (kind) {
+      case "finish":
+        needChars = Math.max(chapterTargetChars - writtenChars, chapterWords * 0.6);
+        break;
+      case "rewrite":
+        needChars = selectionChars * 1.1 + 200;
+        break;
+      case "expand":
+        // 有选中就扩到两倍；没选中是整章扩写，产出至少不比原章短。
+        needChars =
+          selectionChars > 0
+            ? selectionChars * 2.1
+            : Math.max(chapterTargetChars, contentChars * 1.2 + 200);
+        break;
+      case "rewriteChapter":
+        needChars = contentChars * 1.2 + 200;
+        break;
+      case "outline":
+        needChars = 600;
+        break;
+      case "custom":
+        needChars = selectionChars > 0 ? selectionChars * 1.3 + 400 : 1800;
+        break;
+      default:
+        // 续写一段：文风预设最长约 1100 字，按 1200 字给额度。
+        needChars = 1200;
+    }
+    const maxTokens = tokensForChars(
+      needChars,
+      profile.maxTokens,
+      profile.contextWindow,
+      profile.model
+    );
 
     const built = buildMessages({
       project,
@@ -781,8 +995,8 @@ export const useStore = create<Store>((set, get) => ({
       anchor,
       contextWindow: profile.contextWindow,
       promptTemplate: s.promptTemplate,
-      maxTokens: profile.maxTokens,
-      chapterWords: chapterWordsOf(project),
+      maxTokens,
+      chapterWords,
       retrieved,
       foreshadows,
     });
@@ -798,20 +1012,13 @@ export const useStore = create<Store>((set, get) => ({
       anchor,
       profileName: profile.model,
       startedAt: Date.now(),
+      requestId,
+      baseChars: writtenChars,
+      rounds: 0,
+      // 只有「写完本章」承诺了整章字数；其它动作没有可核对的目标。
+      targetChars: kind === "finish" ? chapterTargetChars : undefined,
     };
     set({ gen, aiOpen: true });
-
-    // 写完本章要真的写满：按缺口估算输出上限，不受 profile 里 2410 的默认值限制。
-    let maxTokens = profile.maxTokens;
-    if (kind === "finish") {
-      const words = chapterWordsOf(project);
-      const written = s.draft.content.replace(/\s/g, "").length;
-      const needChars = Math.max(words * 1.2 - written, words * 0.6);
-      maxTokens = Math.min(
-        16000,
-        Math.max(profile.maxTokens, Math.ceil((needChars / 1.35) * 1.15) + 400)
-      );
-    }
 
     try {
       await api.generate({
@@ -823,7 +1030,7 @@ export const useStore = create<Store>((set, get) => ({
       });
     } catch (err) {
       set((cur) =>
-        cur.gen && cur.gen.id === requestId
+        cur.gen && (cur.gen.requestId ?? cur.gen.id) === requestId
           ? { gen: { ...cur.gen, status: "error", error: String(err) } }
           : {}
       );
@@ -833,7 +1040,7 @@ export const useStore = create<Store>((set, get) => ({
   async cancelAI() {
     const gen = get().gen;
     if (!gen) return;
-    await api.cancelGeneration(gen.id);
+    await api.cancelGeneration(gen.requestId ?? gen.id);
   },
 
   async acceptAI() {
@@ -851,16 +1058,27 @@ export const useStore = create<Store>((set, get) => ({
     }
 
     const replaceAll = gen.kind === "rewriteChapter";
+    // 扩写：选中了一段就替换那段，没选中就把整章换成扩写后的版本。
+    const expandWhole = gen.kind === "expand" && !gen.selection?.text.trim();
     await get().applyGenerated(text, {
       anchor: gen.anchor,
-      selection: gen.kind === "rewrite" ? gen.selection : undefined,
+      selection:
+        gen.kind === "rewrite" || gen.kind === "expand" ? gen.selection : undefined,
       reason: replaceAll
         ? "AI 整章重写前"
         : gen.kind === "rewrite"
           ? "AI 改写前"
-          : "AI 续写前",
-      replace: replaceAll,
+          : gen.kind === "expand"
+            ? "AI 扩写前"
+            : "AI 续写前",
+      replace: replaceAll || expandWhole,
     });
+    if (gen.kind === "expand") {
+      get().toast(
+        expandWhole ? "已按扩写后的版本替换整章" : "已替换为扩写后的段落",
+        "success"
+      );
+    }
     set({ gen: { ...gen, applied: true } });
   },
 
@@ -955,6 +1173,14 @@ export const useStore = create<Store>((set, get) => ({
     const finalInstruction = instruction?.trim() || "";
     const anchor = s.selection?.end ?? s.caret ?? s.draft.content.length;
 
+    // 三版同写不是「写三段随缘的几百字」，而是把这一章的缺口拆成三份：
+    // 每版各写一段，每段的目标 = (目标字数 − 已写) ÷ 3。这样挑一版接上去，
+    // 加起来正好接近「每章字数」。
+    const chapterWords = chapterWordsOf(project);
+    const written = s.draft.content.replace(/\s/g, "").length;
+    const remainChars = Math.max(chapterWords * 1.2 - written, chapterWords * 0.6);
+    const segmentWords = Math.round(remainChars / 1.2 / 3);
+
     let retrieved: { title: string; text: string }[] = [];
     if (s.draft.content.length > 200) {
       const query = `${s.draft.content.slice(-600)}\n${chapter.outline}\n${finalInstruction}`;
@@ -981,6 +1207,8 @@ export const useStore = create<Store>((set, get) => ({
       contextWindow: profile.contextWindow,
       promptTemplate: s.promptTemplate,
       maxTokens: profile.maxTokens,
+      chapterWords,
+      segmentWords,
       retrieved,
       foreshadows,
     });
@@ -1000,6 +1228,14 @@ export const useStore = create<Store>((set, get) => ({
 
     // 三版并发时，中转站/网关经常把其中一发直接掐断（ECONNRESET）。
     // 单版失败先自动重试一次，避免"第 3 版 失败"这种白丢一版。
+    // 输出上限也要放大：默认 max_tokens 只有一千多，长段落会被硬切在半截。
+    console.info(
+      `[multi] 每章目标 ${chapterWords} 字，已写 ${written} 字，每版目标 ${segmentWords} 字`
+    );
+    const multiMaxTokens = Math.min(
+      16000,
+      Math.max(profile.maxTokens, Math.ceil((segmentWords * 1.2) / 1.35) * 1.3 + 400)
+    );
     const launch = (id: string, temperature: number, attempt: number) => {
       void api
         .generate({
@@ -1007,7 +1243,7 @@ export const useStore = create<Store>((set, get) => ({
           profileId: profile.id,
           messages: built.messages,
           temperature,
-          maxTokens: profile.maxTokens,
+          maxTokens: multiMaxTokens,
         })
         .catch((err) => {
           if (attempt === 0) {
@@ -1075,7 +1311,7 @@ export const useStore = create<Store>((set, get) => ({
     const multi = get().multi;
     if (!multi) return;
     multi.items.forEach((it) => {
-      if (it.status === "streaming") void api.cancelGeneration(it.id);
+      if (it.status === "streaming") void api.cancelGeneration(it.id).catch(() => {});
     });
     set({ multi: null });
   },
@@ -1154,8 +1390,100 @@ export const useStore = create<Store>((set, get) => ({
 
   discardAI() {
     const gen = get().gen;
-    if (gen?.status === "streaming") void api.cancelGeneration(gen.id);
+    if (gen?.status === "streaming") void api.cancelGeneration(gen.requestId ?? gen.id).catch(() => {});
     set({ gen: null });
+  },
+
+  /**
+   * 「写完本章」最大的问题是：模型写一半就收尾，前端从来不核对。
+   * 这里按实际字数算缺口，差得多就自动再要一段（最多两轮），
+   * 每轮都把已生成的内容当成「已写正文」重新算「还差多少字」。
+   */
+  async continueShort(force = false) {
+    const s = get();
+    const gen = s.gen;
+    if (!gen || gen.kind !== "finish" || gen.continuing) return;
+    // 自动补写只认正常写完；用户点过「停止」就不再自动续，手动按钮除外。
+    if (force ? gen.status !== "done" && gen.status !== "stopped" : gen.status !== "done") return;
+    if (gen.applied) return;
+    const target = gen.targetChars ?? 0;
+    if (target <= 0) return;
+    const rounds = gen.rounds ?? 0;
+    if (!force && rounds >= 2) return;
+    const produced = producedChars(gen);
+    if (!force && produced >= target * 0.9) return;
+
+    const project = s.projects.find((p) => p.id === s.activeProjectId);
+    const chapter = s.chapters.find((c) => c.id === s.activeChapterId);
+    const draft = s.draft;
+    const profile = activeProfile(s);
+    if (!project || !chapter || !draft || !profile?.hasKey) return;
+
+    const cleaned = cleanGenerated(gen.text);
+    if (!cleaned.trim()) return;
+    // 把这一轮已经写出来的正文也交给模型，续写才不会重复、缺口才算得对。
+    const combined = `${draft.content}${draft.content.trim() ? "\n\n" : ""}${cleaned}`;
+
+    const chapterWords = chapterWordsOf(project);
+    const needChars = Math.max(
+      Math.round(chapterWords * 1.2) - combined.replace(/\s/g, "").length,
+      400
+    );
+    const foreshadows = s.threads
+      .filter((t) => t.status === "open")
+      .slice(0, 8)
+      .map((t) => (t.detail.trim() ? `${t.title}：${t.detail.trim()}` : t.title));
+
+    const maxTokens = tokensForChars(
+      needChars,
+      profile.maxTokens,
+      profile.contextWindow,
+      profile.model
+    );
+    const built = buildMessages({
+      project,
+      chapters: s.chapters,
+      entities: s.entities,
+      chapter,
+      content: combined,
+      kind: "finish",
+      instruction: gen.instruction,
+      contextWindow: profile.contextWindow,
+      promptTemplate: s.promptTemplate,
+      maxTokens,
+      chapterWords,
+      foreshadows,
+    });
+
+    const shortfall = Math.max(0, Math.round((target - produced) / 1.2));
+    const requestId = crypto.randomUUID();
+    set({
+      gen: {
+        ...gen,
+        status: "streaming",
+        continuing: true,
+        rounds: rounds + 1,
+        requestId,
+        text: gen.text + (/\n\s*$/.test(gen.text) ? "" : "\n\n"),
+      },
+    });
+    get().toast(`还差约 ${shortfall} 字，正在补写第 ${rounds + 1} 段…`);
+
+    try {
+      await api.generate({
+        requestId,
+        profileId: profile.id,
+        messages: built.messages,
+        temperature: profile.temperature,
+        maxTokens,
+      });
+    } catch (err) {
+      set((cur) =>
+        cur.gen && (cur.gen.requestId ?? cur.gen.id) === requestId
+          ? { gen: { ...cur.gen, status: "error", continuing: false, error: String(err) } }
+          : {}
+      );
+    }
   },
 
   async restoreSnapshot(id) {
@@ -1247,7 +1575,9 @@ export const useStore = create<Store>((set, get) => ({
 
     const stale =
       !chapter.summary.trim() ||
-      chapter.wordCount > chapter.summaryWords * 1.6 + 200;
+      chapter.wordCount > chapter.summaryWords * 1.6 + 200 ||
+      // 恢复到更早（更短）的版本后，摘要会比正文还长，也是过期。
+      chapter.summaryWords > chapter.wordCount * 1.6 + 200;
     if (!stale) return;
 
     // One attempt per chapter per ~300 words, so refreshes happen eventually
@@ -1396,6 +1726,96 @@ export const useStore = create<Store>((set, get) => ({
 
   setExportIds(ids) {
     set((s) => (s.exportRequest ? { exportRequest: { ...s.exportRequest, ids } } : {}));
+  },
+
+  async sendChat(text) {
+    const clean = text.trim();
+    if (!clean || get().chatBusy) return;
+    const s = get();
+    const project = s.projects.find((p) => p.id === s.activeProjectId);
+    if (!project || !s.draft) {
+      get().toast("先打开一个作品和章节", "error");
+      return;
+    }
+    const profile =
+      s.profiles.find((p) => p.id === s.activeProfileId) ??
+      s.profiles.find((p) => p.isDefault) ??
+      s.profiles[0];
+    if (!profile?.hasKey) {
+      get().toast("还没有可用的模型配置", "error");
+      set({ settingsOpen: true });
+      return;
+    }
+    const chapter = s.chapters.find((c) => c.id === s.activeChapterId);
+
+    const history = s.chat
+      .filter((t) => t.status === "done" && (t.role === "user" || t.role === "assistant"))
+      .map((t) => ({ role: t.role, content: t.content }));
+    const messages = buildChatMessages({
+      project,
+      chapter,
+      outline: chapter?.outline ?? "",
+      content: s.draft.content,
+      entities: s.entities,
+      threads: s.threads,
+      history,
+    });
+    // 每次都以「上下文简报 → 握手 → 历史 → 这次的问题」的顺序发给模型，
+    // 保证最新一章的正文永远在上下文里，而不是只在第一轮。
+    messages.push({ role: "user", content: clean });
+
+    const userTurn: ChatTurn = {
+      id: crypto.randomUUID(),
+      role: "user",
+      content: clean,
+      createdAt: Date.now(),
+      status: "done",
+    };
+    const replyId = crypto.randomUUID();
+    const reply: ChatTurn = {
+      id: replyId,
+      role: "assistant",
+      content: "",
+      createdAt: Date.now(),
+      status: "streaming",
+    };
+    set((cur) => ({ chat: [...cur.chat, userTurn, reply], chatBusy: true }));
+    const requestId = crypto.randomUUID();
+    set({ chatRequestId: requestId });
+
+    try {
+      await api.generate({
+        requestId,
+        profileId: profile.id,
+        messages,
+        temperature: 0.7,
+        maxTokens: 1200,
+      });
+    } catch (err) {
+      set((cur) => ({
+        chatBusy: false,
+        chatRequestId: null,
+        chat: cur.chat.map((t) =>
+          t.id === replyId ? { ...t, status: "error", error: String(err) } : t
+        ),
+      }));
+    }
+  },
+
+  async cancelChat() {
+    const id = get().chatRequestId;
+    if (!id) return;
+    await api.cancelGeneration(id);
+    set((cur) => ({
+      chatBusy: false,
+      chat: cur.chat.map((t) =>
+        t.status === "streaming" ? { ...t, status: "error", error: "已停止" } : t
+      ),
+    }));
+  },
+
+  clearChat() {
+    set({ chat: [], chatBusy: false, chatRequestId: null });
   },
 
   async loadThreads() {

@@ -2,6 +2,8 @@ import { AnimatePresence, motion } from "motion/react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useRef } from "react";
+import { splitChatActions } from "@/lib/ai";
+import type { EntityKind, EntityPatch } from "@/lib/types";
 import AIPanel from "@/components/AIPanel";
 import CommandPalette from "@/components/CommandPalette";
 import Bible from "@/components/Bible";
@@ -64,8 +66,17 @@ export default function App() {
       listen<{ requestId: string; text: string }>("ai://delta", (e) => {
         const { requestId, text } = e.payload;
         useStore.setState((s) => {
-          if (s.gen && s.gen.id === requestId) {
+          if (s.gen && (s.gen.requestId ?? s.gen.id) === requestId) {
             return { gen: { ...s.gen, text: s.gen.text + text, status: "streaming" } };
+          }
+          if (s.chatRequestId === requestId) {
+            return {
+              chat: s.chat.map((t) =>
+                t.status === "streaming" && t.role === "assistant"
+                  ? { ...t, content: t.content + text }
+                  : t
+              ),
+            };
           }
           if (s.multi) {
             const idx = s.multi.items.findIndex((i) => i.id === requestId);
@@ -88,7 +99,7 @@ export default function App() {
       listen<{ requestId: string; text: string }>("ai://reasoning", (e) => {
         const { requestId, text } = e.payload;
         useStore.setState((s) =>
-          s.gen && s.gen.id === requestId
+          s.gen && (s.gen.requestId ?? s.gen.id) === requestId
             ? {
                 gen: {
                   ...s.gen,
@@ -105,10 +116,51 @@ export default function App() {
       listen<{ requestId: string; aborted: boolean }>("ai://done", (e) => {
         const { requestId, aborted } = e.payload;
         useStore.setState((s) => {
-          if (s.gen && s.gen.id === requestId) {
+          if (s.gen && (s.gen.requestId ?? s.gen.id) === requestId) {
             return {
-              gen: { ...s.gen, status: aborted ? "stopped" : "done" },
+              gen: { ...s.gen, status: aborted ? "stopped" : "done", continuing: false },
             };
+          }
+          if (s.chatRequestId === requestId) {
+            const chat = s.chat.map((t) => {
+              if (t.status !== "streaming" || t.role !== "assistant") return t;
+              const split = splitChatActions(t.content);
+              const actions = split.actions.map((a, i) => ({
+                ...a,
+                id: `${t.id}-${i}`,
+              }));
+              // 设定卡按名字对上现有条目，标明是「改」还是「新增」
+              const normName = (n: string) => n.trim().toLowerCase();
+              const entityPatches: EntityPatch[] = split.entities
+                .map((p) => {
+                  const hit = s.entities.find(
+                    (e) => normName(e.name) === normName(p.name)
+                  );
+                  const kind = (p.kind as EntityKind | undefined) ?? hit?.kind ?? "concept";
+                  const speechLength = ["short", "medium", "long"].includes(
+                    p.speechLength ?? ""
+                  )
+                    ? (p.speechLength as EntityPatch["speechLength"])
+                    : undefined;
+                  return {
+                    ...p,
+                    existing: Boolean(hit),
+                    kind,
+                    speechLength,
+                  };
+                })
+                .filter((p) => p.name.trim());
+              return {
+                ...t,
+                content: split.text || (aborted ? t.content : "（没有回复）"),
+                title: split.title,
+                actions: actions.length ? actions : t.actions,
+                entityPatches: entityPatches.length ? entityPatches : undefined,
+                status: aborted && !split.text.trim() ? ("error" as const) : ("done" as const),
+                error: aborted && !split.text.trim() ? "已停止" : undefined,
+              };
+            });
+            return { chat, chatBusy: false, chatRequestId: null };
           }
           if (s.multi) {
             const items = s.multi.items.map((it) =>
@@ -120,6 +172,9 @@ export default function App() {
           }
           return {};
         });
+        // 写完本章：先看写够了没有，不够就自动接着补一段。
+        // 用户自己按了「停止」就不再自动补写，免得停不下来。
+        if (!aborted) void useStore.getState().continueShort();
         void useStore.getState().maybeJudgeCandidates();
       })
     );
@@ -128,8 +183,19 @@ export default function App() {
       listen<{ requestId: string; message: string }>("ai://error", (e) => {
         const { requestId, message } = e.payload;
         useStore.setState((s) => {
-          if (s.gen && s.gen.id === requestId) {
-            return { gen: { ...s.gen, status: "error", error: message } };
+          if (s.gen && (s.gen.requestId ?? s.gen.id) === requestId) {
+            return { gen: { ...s.gen, status: "error", continuing: false, error: message } };
+          }
+          if (s.chatRequestId === requestId) {
+            return {
+              chatBusy: false,
+              chatRequestId: null,
+              chat: s.chat.map((t) =>
+                t.status === "streaming" && t.role === "assistant"
+                  ? { ...t, status: "error" as const, error: message }
+                  : t
+              ),
+            };
           }
           if (s.multi) {
             const items = s.multi.items.map((it) =>

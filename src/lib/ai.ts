@@ -1,10 +1,12 @@
 import type {
+  ChatAction,
   ChapterMeta,
   ChatMessage,
   Entity,
   GenKind,
   Project,
   Selection,
+  Thread,
 } from "./types";
 import { estimateTokens } from "./format";
 
@@ -364,7 +366,11 @@ function continueTask(length: number, voice: VoiceId) {
         : voice === "web"
           ? "- 直接推进冲突或目标，不要回顾；动作多于心理。"
           : "- 接住最后一句的语气，不要急着解释。";
-  return `【任务】从【续写从这里开始 ↓】标记之后直接续写，约 ${length} 字。
+  return `【任务】从【续写从这里开始 ↓】标记之后直接续写，约 ${length} 字（允许 ${Math.round(
+    length * 0.8
+  )}—${Math.round(length * 1.2)} 字）。
+- 字数是硬指标：写到 ${length} 字左右才收。不够就把这场戏写细（动作、对白来回、具体物件、人物反应），
+  但不要用总结句、景物堆砌、心理独白凑字数；也不要把一场戏写成三件事的流水账。
 - 承接最后一句的语感、节奏与视角，不跳场、不总结。
 - 这一段必须有一场有阻力的戏：谁想要什么、被谁挡住、他做了什么反应。不要用事件清单代替戏，也不要用“一个没说出口的念头”当起伏。
 - 不要从起床、走路、进教室这类流程写起；直接切入已经在发生的动作或对白。
@@ -385,16 +391,23 @@ function finishChapterTask(
   targetChars: number,
   hasOutline: boolean
 ) {
-  const remain = Math.max(400, targetChars - writtenChars);
+  // 缺口要照实说：已经写了 1900 字就别再要 400 字，模型会白写一段。
+  const remain = Math.max(120, targetChars - writtenChars);
+  // 提示词里写的字数一律用「中文字数」，别拿含标点、空白的字符数去要求模型，
+  // 否则 4500 字的章会让它以为要写 5400。
+  const targetWords = Math.round(targetChars / 1.2);
+  const remainWords = Math.max(100, Math.round(remain / 1.2));
   const sceneRule =
     voice === "light" || voice === "web" || voice === "romance"
       ? "- 这一章只写一场戏；已经写过的那场不要重述，直接从它结束的地方推进。"
       : "- 保持与上文同一场景与视角，不要重述已经写过的事。";
   return `【任务】把本章写完，不是再写一小段。
-- 目标：本章总字数 ${targetChars} 字左右。目前已写约 ${writtenChars} 字，还差约 ${remain} 字，请把剩下的部分全部写完。
-- 「还差 ${remain} 字」是硬要求：不够就把戏写细（动作、对白来回、具体物件），不要用总结句、景物堆砌或心理独白凑字数。
+- 目标：本章总字数约 ${targetWords} 字。目前已写约 ${Math.round(
+    writtenChars / 1.2
+  )} 字，还差约 ${remainWords} 字，请把剩下的部分全部写完。
+- 「还差 ${remainWords} 字」是硬要求：写到这个量级才收尾。不够就把戏写细（动作、对白来回、具体物件、人物反应），不要用总结句、景物堆砌或心理独白凑字数。
 ${sceneRule}
-${hasOutline ? "- 按【本章章纲】推进：把没写到的那几拍写完，直到章末的钩子落地。" : "- 这一章写得短了，就在同一个场景里把冲突推到底，用一个具体的未解问题收尾。"}
+${hasOutline ? "- 按【本章章纲】推进：把没写到的那几拍写完，直到章末的钩子落地。章纲几拍没写完，就不许收尾。" : "- 这一章写得短了，就在同一个场景里把冲突推到底，用一个具体的未解问题收尾。"}
 - 承接最后一句的语感与视角，不跳场、不总结、不复述前情。
 - 写到最后一句就停：章末留一个具体的钩子（一句台词、一个动作、一个新事实），然后结束。
 - 不要写「未完待续」，不要写下一章的内容，不要询问、不要确认、不要解释。直接输出正文。`;
@@ -422,6 +435,35 @@ function rewriteTask(instruction: string) {
   return `【任务】只改写表达，不改情节、信息、人名地名；保持原有视角与时态。
 改写要求：${instruction}
 【输出要求】只输出改写后的正文，段落数与原文大致相当。`;
+}
+
+/**
+ * 扩写：把已有文字变长，不是重写一遍，也不是在后面续写。
+ * 加的是能看见的东西（动作、对白来回、物件、反应），不是形容词和内心独白。
+ */
+function expandTask(
+  sourceChars: number,
+  targetWords: number,
+  voice: VoiceId,
+  instruction?: string,
+  wholeChapter = false
+) {
+  const scene = wholeChapter
+    ? "- 全章扩写：按原文顺序逐段加密度，不要重排段落，不要合并段落，不要跳过任何一段。"
+    : voice === "light" || voice === "romance" || voice === "web"
+      ? "- 只在这一场戏里加密度：把被概括掉的动作展开成具体动作，把一句对白变成有来有回的几句。"
+      : "- 在同一场景、同一视角里加密度，不要另起场景。";
+  return `【任务】扩写【待扩写原文】：把它写成一个更长的版本，不是重写、也不是在后面续写。
+- 原文约 ${Math.round(sourceChars / 1.2)} 字，扩写到约 ${targetWords} 字（允许 ${Math.round(
+    targetWords * 0.85
+  )}—${Math.round(targetWords * 1.2)} 字）。
+- 情节、人物、顺序、已有信息全部保留：原文写到的每一件事都还在，一句不删。
+- 加的是能看见的东西：动作、对白来回、具体物件、别人的反应、手上的细节。
+- 不要用形容词堆砌、景物描写和心理独白凑字数；同一句话不许换个说法说两遍。
+- 不许新增设定、人物或事件；原有对白可以拆成几句、中间夹动作，但不改意思。
+${scene}
+${instruction ? `- 额外要求：${instruction}` : ""}
+- 直接输出扩写后的完整正文：不要解释改了什么，不要分段标注，不要加标题。`;
 }
 
 function rewriteChapterTask(targetLength: number, sourceChars: number) {
@@ -459,6 +501,8 @@ export function buildMessages(opts: {
   maxTokens?: number;
   /** 写完本章时的目标总字数（章节字数），缺省按每章 2000 字算。 */
   chapterWords?: number;
+  /** 续写时希望这一段写多长（字数）；多候选会拆成几段各自传，汇总到目标字数。 */
+  segmentWords?: number;
   /** Snippets retrieved from earlier chapters (keyword RAG). */
   retrieved?: RetrievedSnippet[];
   /** Open plot threads to pay off. */
@@ -467,8 +511,12 @@ export function buildMessages(opts: {
   const { project, chapters, entities, chapter, content, kind, selection, anchor } = opts;
 
   const contextWindow = Math.max(2048, opts.contextWindow || 32768);
-  const reserve = Math.min(4096, opts.maxTokens || 2400) + 900;
-  const capTokens = Math.floor(contextWindow * 0.92);
+  // 输出额度要按这次真实的 max_tokens 预留。推理模型和长章会开到 8k–16k，
+  // 还按 4096 封顶就会让输入把窗口吃满，服务商要么报错，要么把正文截短。
+  const outTokens = Math.max(600, opts.maxTokens || 2400);
+  const reserve = Math.min(outTokens, Math.floor(contextWindow * 0.5)) + 900;
+  // 输入必须给输出留位置：窗口 − 预留额度，再留 5% 给 token 估算误差。
+  const capTokens = Math.max(1200, Math.floor((contextWindow - reserve) * 0.95));
   const capChars = Math.floor(capTokens * 1.35);
 
   const voiceId: VoiceId =
@@ -516,7 +564,11 @@ export function buildMessages(opts: {
     (kind === "rewrite"
       ? "把这段改得像人写的：删掉套语与解释性句子，把抽象情绪改成动作、对话或身体反应；句子长短错开。情节与信息不变。"
       : "");
-  const targetLength = VOICE_LENGTH[voiceId] + (index % 3) * 80;
+  // 多候选会把「目标字数 ÷ 3」作为每段的目标传进来；普通续写仍按文风预设的长度。
+  const targetLength = Math.max(
+    300,
+    opts.segmentWords || VOICE_LENGTH[voiceId] + (index % 3) * 80
+  );
   // 写完本章：按「整章目标字数」算缺口，而不是再挤 VOICE_LENGTH 那么一小段。
   const chapterWords = Math.max(600, opts.chapterWords || 2000);
   const chapterTargetChars = Math.round(chapterWords * 1.2);
@@ -536,13 +588,6 @@ export function buildMessages(opts: {
 
     const shown = ranked.slice(0, budgets.entN);
     if (shown.length) {
-      const kindLabel: Record<string, string> = {
-        character: "人物",
-        location: "地点",
-        faction: "势力",
-        item: "物品",
-        concept: "设定",
-      };
       const lines = shown.map((e) => {
         const role = [e.role, e.aliases ? `别名：${e.aliases}` : ""]
           .filter(Boolean)
@@ -550,9 +595,9 @@ export function buildMessages(opts: {
         const desc = e.description.trim().replace(/\n+/g, " ").slice(0, 180);
         return `· ${e.name}${role ? `（${role}）` : ""}：${desc || "（暂无描述）"}`;
       });
-      parts.push(
-        `【${kindLabel[shown[0].kind] ? "人物与设定" : "设定"}】\n${lines.join("\n")}`
-      );
+      // 有角色卡就叫「人物与设定」，只有地点/物品就叫「设定」。
+      const hasCharacter = shown.some((e) => e.kind === "character");
+      parts.push(`【${hasCharacter ? "人物与设定" : "设定"}】\n${lines.join("\n")}`);
     }
 
     const voiceLines = voiceCharacters.slice(0, 6).map((e) => {
@@ -598,7 +643,7 @@ export function buildMessages(opts: {
     }
 
     const outline = chapter.outline.trim();
-    if (outline) {
+    if (outline && kind !== "rewrite" && kind !== "expand") {
       parts.push(
         `【本章章纲（事件清单，只取其中一件写成一场戏；其余事件不要提，也不要一句带过）】\n${outline.slice(0, 1200)}`
       );
@@ -627,6 +672,27 @@ export function buildMessages(opts: {
       tailChars = text.length;
       parts.push(`【待改写原文】\n${text}`);
       parts.push(rewriteTask(instruction));
+    } else if (kind === "expand") {
+      // 扩写：有选中就扩选中的那段，没有就把整章扩到「每章字数」。
+      const useSelection = Boolean(selection?.text.trim());
+      const text = (useSelection ? selection!.text : content).slice(0, 30000);
+      tailChars = text.length;
+      const sourceWords = Math.round(text.replace(/\s/g, "").length / 1.2);
+      const targetWords = useSelection
+        ? Math.max(300, sourceWords * 2)
+        : Math.max(chapterWords, sourceWords + 300);
+      parts.push(
+        `【待扩写${useSelection ? "选段" : "全章"}（原文约 ${sourceWords} 字）】\n${text}`
+      );
+      parts.push(
+        expandTask(
+          text.replace(/\s/g, "").length,
+          targetWords,
+          voiceId,
+          instruction,
+          !useSelection
+        )
+      );
     } else if (kind === "rewriteChapter") {
       // 整章重写：把全章交给模型换写法，情节与信息不动。
       const text = content.slice(0, 30000);
@@ -698,9 +764,17 @@ export function buildMessages(opts: {
 
   // Hard guarantee: never exceed the model window. Sacrifice the cheapest
   // layers first (RAG → entities → summary → tail text).
-  for (let i = 0; i < 12 && built.chars > capChars; i += 1) {
+  // 扩写/改写/重写时正文块就是任务本身，先砍辅助层，正文只在不砍就放不下时才缩。
+  const textOnTask = kind === "rewrite" || kind === "expand" || kind === "rewriteChapter";
+  for (let i = 0; i < 16 && built.chars > capChars; i += 1) {
     trimmed = true;
-    if (budgets.ragN > 0) budgets = { ...budgets, ragN: budgets.ragN - 1 };
+    if (textOnTask) {
+      if (budgets.ragN > 0) budgets = { ...budgets, ragN: budgets.ragN - 1 };
+      else if (budgets.entN > 4) budgets = { ...budgets, entN: budgets.entN - 2 };
+      else if (budgets.sumB > 200) budgets = { ...budgets, sumB: Math.floor(budgets.sumB * 0.75) };
+      else if (budgets.tailB > 600) budgets = { ...budgets, tailB: Math.floor(budgets.tailB * 0.9) };
+      else break;
+    } else if (budgets.ragN > 0) budgets = { ...budgets, ragN: budgets.ragN - 1 };
     else if (budgets.entN > 4) budgets = { ...budgets, entN: budgets.entN - 2 };
     else if (budgets.sumB > 200) budgets = { ...budgets, sumB: Math.floor(budgets.sumB * 0.75) };
     else if (budgets.tailB > 600) budgets = { ...budgets, tailB: Math.floor(budgets.tailB * 0.8) };
@@ -758,6 +832,255 @@ export function buildMessages(opts: {
     },
   };
 }
+
+/* ------------------------------------------------------------------ 与 AI 写手对话 */
+
+export interface ChatContextOpts {
+  project: Project;
+  chapter?: ChapterMeta;
+  outline: string;
+  content: string;
+  entities: Entity[];
+  threads: Thread[];
+  history: { role: "user" | "assistant"; content: string }[];
+}
+
+const CHAT_SYSTEM = `你是这本书的 AI 写手，和作者一起写稿。你不是客服，也不讲写作课。
+
+默认行为：
+- 作者让你写，你就直接写正文，不要先讲思路、不要反问、不要等他确认。
+- 作者只是问意见，你再讨论。拿不准时，先按「他要正文」处理。
+- 中文，句子短。不吹捧、不客套。作者问「好不好」，说清楚好在哪、差在哪，必要时直接反对。
+
+写正文的规矩：
+- 承接当前正文最后一个字的语感、视角、时态与人称，不跳场、不总结、不复述前情。
+- 一次只推进一场戏，不要在一段里塞三件事。
+- 人物说话和设定卡一致；对白要能分辨出谁在说话。
+- 老规矩：不要「仿佛/似乎/一丝/不禁/微微/缓缓」这类套语，不写总结句和解释性旁白。
+- 作者要标题就先给标题，再给正文。
+
+你要知道的：
+- 你能看到作品设定、本章章纲、本章正文，以这些为准，别凭空编人物或设定。
+
+格式：
+- 作者要正文时：第一行只写章节标题（像「第二章 借来的笔记」），空一行，从第二行开始写正文。
+  用纯文本，不要 # 、不要 markdown、不要加粗。
+- 只给意见时：短句分条，不要标题行。
+- 纯正文回复不要输出 actions 数组。
+
+改设定卡：
+- 作者让你补或改设定时，在回复最后另起一行输出：
+{"entities":[{"name":"唐棠","kind":"character","role":"女主·校花","description":"要写进设定卡的完整描述","speechStyle":"…","speechWords":"…","speechTaboo":"…"}]}
+- name 必须和设定库里已有的名字完全一致（改已有的就只写要改的字段，这是覆盖不是追加）。
+- 新角色要写全 kind 和 description。一次最多 6 条。
+- 不要自己编设定库里没有的人：只补作者提到或正文里已经写到的。
+- 没有要改的设定就不要输出这个数组。定位用名字就够了，不要输出 id。
+- 当你建议一个写作动作时，在回复最后另起一行输出 JSON，最多两个：
+{"actions":[{"kind":"continue|finish|rewriteChapter|outline","label":"不超过八个字","instruction":"追加要求，一句话"}]}
+含义：continue=从文末接着写一段；finish=把本章按目标字数写完；rewriteChapter=整章换写法；outline=推演接下来五章。
+纯正文回复不要输出这个数组。`;
+
+function entityBrief(e: Entity): string {
+  const desc = e.description.trim().replace(/\n+/g, " ").slice(0, 90);
+  const role = e.role.trim();
+  return `· ${e.name}${role ? `（${role}）` : ""}${desc ? `：${desc}` : ""}`;
+}
+
+/** 把作品上下文压成写手能看的简报；超长时就近裁切，保住最近的正文。 */
+export function buildChatMessages(opts: ChatContextOpts): ChatMessage[] {
+  const { project, chapter, outline, content, entities, threads, history } = opts;
+
+  const cast = entities
+    .filter((e) => e.kind === "character")
+    .slice(0, 12)
+    .map(entityBrief);
+  const places = entities
+    .filter((e) => e.kind !== "character" && e.kind !== "concept")
+    .slice(0, 8)
+    .map(entityBrief);
+
+  const open = threads
+    .filter((t) => t.status === "open")
+    .slice(0, 6)
+    .map((t) => `· ${t.title}${t.detail.trim() ? `：${t.detail.trim().slice(0, 80)}` : ""}`);
+
+  const parts = [
+    `【作品】《${project.title}》`,
+    `类型：${project.genre || "未指定"}；视角：${project.pov || "未指定"}；每章约 ${project.chapterWords || 2000} 字`,
+    project.synopsis.trim() ? `【梗概】\n${project.synopsis.trim().slice(0, 900)}` : "",
+    cast.length ? `【人物】\n${cast.join("\n")}` : "",
+    places.length ? `【设定】\n${places.join("\n")}` : "",
+    open.length ? `【待回收伏笔】\n${open.join("\n")}` : "",
+    chapter ? `【当前章节】${chapter.title}` : "",
+    outline.trim() ? `【本章章纲】\n${outline.trim().slice(0, 1200)}` : "",
+    content.trim()
+      ? `【本章正文（${content.replace(/\s/g, "").length} 字）】\n${tail(content, 6000)}`
+      : "【本章正文】还是空的",
+  ].filter(Boolean);
+
+  return [
+    { role: "system", content: CHAT_SYSTEM },
+    { role: "user", content: parts.join("\n\n") },
+    { role: "assistant", content: "（我已经读过这本书的设定和当前章节了。说你想聊什么。）" },
+    ...history.slice(-24).map((h) => ({
+      role: h.role as ChatMessage["role"],
+      content: h.content,
+    })),
+  ];
+}
+
+const ACTION_KINDS = ["continue", "finish", "rewriteChapter", "outline"] as const;
+type ActionKind = (typeof ACTION_KINDS)[number];
+
+const MD_HEADING = /^\s{0,3}#{1,6}\s+/;
+/** 只吃行首的 markdown 列表符号，正文里的数字和小数点不动。 */
+const BULLET_PREFIX = /^\s*(?:[-*•]\s+|\d{1,2}[.)]\s+)/;
+/** 一串「- xxx」连成列表时才当列表看；单独一行带短横可能是正文里的破折号，不动它。 */
+const LIST_HEAVY_RATIO = 0.6;
+
+/**
+ * 对话回复里常混着 markdown：强调符号、小标题（「# 第二章 借来的笔记」）、
+ * 列表符号。聊天面板按纯文本渲染，这些符号会原样露出来，所以在这里洗掉。
+ */
+export function cleanChatMarkdown(text: string): string {
+  const lines = text.split("\n");
+  const nonEmpty = lines.filter((l) => l.trim());
+  const bulleted = nonEmpty.filter((l) => BULLET_PREFIX.test(l)).length;
+  const isList = nonEmpty.length >= 2 && bulleted / nonEmpty.length >= LIST_HEAVY_RATIO;
+
+  return lines
+    .map((line) =>
+      line
+        .replace(/\*\*(.+?)\*\*/g, "$1")
+        .replace(/__(.+?)__/g, "$1")
+        .replace(MD_HEADING, "")
+        .replace(isList ? BULLET_PREFIX : /^\s*[-*•]\s+/, "")
+    )
+    .join("\n");
+}
+
+export interface EntityPatch {
+  name: string;
+  kind?: string;
+  role?: string;
+  description?: string;
+  aliases?: string;
+  speechStyle?: string;
+  speechLength?: string;
+  speechWords?: string;
+  speechTaboo?: string;
+}
+
+// actions 和 entities 可能在回复里出现任意次、任意顺序，逐个抠出来再统一拼接正文。
+const BLOCK_RE = /\{\s*"(actions|entities)"\s*:\s*\[[\s\S]*?\]\s*\}/g;
+const BLOCK_RE_LOOSE = /\{\s*(actions|entities)\s*:\s*\[[\s\S]*?\]\s*\}/g;
+
+/** 把回复末尾那段 actions / entities JSON 摘出来，正文里不留痕迹。 */
+export function splitChatActions(raw: string): {
+  text: string;
+  title?: string;
+  actions: Omit<ChatAction, "id">[];
+  entities: EntityPatch[];
+} {
+  const actions: Omit<ChatAction, "id">[] = [];
+  const entities: EntityPatch[] = [];
+  const tolerant = (s: string) => s.replace(/([{,]\s*)([a-zA-Z_]+)\s*:/g, '$1"$2":');
+  const str = (v: unknown, n: number) =>
+    typeof v === "string" ? v.trim().slice(0, n) : undefined;
+
+  // 两套正则的结果取并集，按位置排序后剪掉
+  const blocks: { start: number; end: number; body: string; kind: string }[] = [];
+  for (const re of [BLOCK_RE, BLOCK_RE_LOOSE]) {
+    re.lastIndex = 0;
+    for (const m of raw.matchAll(re)) {
+      if (m.index == null) continue;
+      const start = m.index;
+      const end = start + m[0].length;
+      if (blocks.some((b) => b.start <= start && end <= b.end)) continue;
+      blocks.push({ start, end, body: m[0], kind: m[1] });
+    }
+  }
+  blocks.sort((a, b) => a.start - b.start);
+
+  for (const b of blocks) {
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(tolerant(b.body)) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    if (b.kind === "actions" && actions.length === 0) {
+      for (const a of (parsed.actions as Record<string, unknown>[]) ?? []) {
+        const kind = a.kind as ActionKind;
+        if (!ACTION_KINDS.includes(kind)) continue;
+        actions.push({
+          kind,
+          label: str(a.label, 12) || kind,
+          instruction: str(a.instruction, 200),
+        });
+        if (actions.length >= 2) break;
+      }
+    }
+    if (b.kind === "entities") {
+      for (const e of ((parsed.entities as Record<string, unknown>[]) ?? []).slice(0, 6)) {
+        const name = str(e.name, 40);
+        if (!name) continue;
+        const kindRaw = str(e.kind, 16)?.toLowerCase();
+        entities.push({
+          name,
+          kind: ["character", "location", "faction", "item", "concept"].includes(kindRaw ?? "")
+            ? kindRaw
+            : undefined,
+          role: str(e.role, 24),
+          description: str(e.description, 400),
+          aliases: str(e.aliases, 120),
+          speechStyle: str(e.speechStyle, 80),
+          speechLength: ["short", "medium", "long"].includes(str(e.speechLength, 8) ?? "")
+            ? str(e.speechLength, 8)
+            : undefined,
+          speechWords: str(e.speechWords, 80),
+          speechTaboo: str(e.speechTaboo, 80),
+        });
+      }
+      if (entities.length >= 6) break;
+    }
+  }
+
+  let text = raw;
+  for (const b of blocks.slice().reverse()) {
+    text = text.slice(0, b.start) + text.slice(b.end);
+  }
+  const cleaned = cleanChatMarkdown(text).replace(/\n{3,}/g, "\n\n").trim();
+  // 回复第一行如果是「第二章 借来的笔记」这种标题，摘出来给章节用，正文里不留。
+  const firstLine = cleaned.split("\n")[0] ?? "";
+  const asTitle = firstLine.replace(/^第.{1,4}章[\s　:：、-]*/, "").trim();
+  const isTitleLine =
+    firstLine.length <= 30 &&
+    !/[。！？!?…]/.test(firstLine) &&
+    (/^第[一二三四五六七八九十百零〇\d]+[章回节]/.test(firstLine) ||
+      /^[《「【].{1,20}[》」】]$/.test(firstLine) ||
+      (cleaned.split("\n").length > 2 && asTitle.length > 0 && asTitle.length <= 24 && !/[，,；;]/.test(firstLine)));
+
+  if (isTitleLine) {
+    const rest = cleaned.split("\n").slice(1).join("\n").replace(/^\s*\n+/, "").trim();
+    if (rest) {
+      return {
+        text: rest,
+        title: firstLine.replace(/^[《「【]|[》」】]$/g, "").trim().slice(0, 60),
+        actions,
+        entities,
+      };
+    }
+  }
+  return { text: cleaned, actions, entities };
+}
+
+export const CHAT_OPENERS = [
+  "这一章的节奏怎么样",
+  "结尾的钩子够不够",
+  "帮我推演接下来五章",
+  "哪一段可以删",
+];
 
 export const QUICK_ACTIONS = [
   {

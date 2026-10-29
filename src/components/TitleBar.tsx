@@ -65,7 +65,7 @@ export default function TitleBar() {
   const [maxed, setMaxed] = useState(false);
 
   useEffect(() => {
-    void api.isMaximized().then(setMaxed);
+    void api.isMaximized().then(setMaxed).catch(() => {});
   }, []);
 
   const toggleMax = async () => {
@@ -77,7 +77,7 @@ export default function TitleBar() {
     if (e.button !== 0) return;
     const el = e.target as HTMLElement;
     if (el.closest("button, input, a, textarea, [data-no-drag]")) return;
-    void api.startDrag();
+    void api.startDrag().catch(() => {});
   };
 
   return (
@@ -153,7 +153,7 @@ export default function TitleBar() {
 
       <div className="flex h-full items-stretch border-l border-line/50" data-no-drag>
         <button
-          onClick={() => void api.minimize()}
+          onClick={() => void api.minimize().catch(() => {})}
           className="flex w-[46px] items-center justify-center text-dim transition-colors hover:bg-surface2 hover:text-ink"
           title="最小化"
         >

@@ -62,6 +62,12 @@ export default function ProjectModal() {
 
   const isEdit = modal?.mode === "edit";
 
+  // 数字框清空时 Number("") = 0，非法输入会是 NaN；直接传给 Rust 会反序列化失败。
+  const safeTarget = Number.isFinite(target) ? Math.max(0, Math.round(target)) : 0;
+  const safeChapterWords = Number.isFinite(chapterWords)
+    ? Math.min(8000, Math.max(300, Math.round(chapterWords)))
+    : 2000;
+
   return (
     <>
       <Modal
@@ -91,8 +97,8 @@ export default function ProjectModal() {
                     title: title.trim(),
                     genre,
                     pov,
-                    targetWords: target,
-                    chapterWords,
+                    targetWords: safeTarget,
+                    chapterWords: safeChapterWords,
                     synopsis,
                     styleGuide: style,
                   });
@@ -158,7 +164,7 @@ export default function ProjectModal() {
                     placeholder="300000"
                   />
                 </Field>
-                <Field label="每章字数" hint="「写完本章」按这个数补满一章">
+                <Field label="每章字数" hint="300–8000，「写完本章」按这个数补满">
                   <TextInput
                     type="number"
                     value={chapterWords}

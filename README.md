@@ -187,7 +187,7 @@ src-tauri/
 
 - 默认：`%APPDATA%\com.moyin.novelstudio\moyin.db`
 - 便携模式：设置环境变量 `MOYIN_DATA_DIR` 指向任意目录，数据库与 WebView 缓存都会落在那里
-- 数据库带 `user_version` 迁移（当前 v4），升级不会丢稿
+- 数据库带 `user_version` 迁移（当前 v8），升级不会丢稿
 
 ## 路线图
 
